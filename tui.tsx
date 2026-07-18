@@ -53,7 +53,7 @@ function getGoModels(api: TuiPluginApi): { items: CostItem[]; baseline: number }
   return { items, baseline: BASELINE };
 }
 
-function SidebarContentView(props: { api: TuiPluginApi; items: CostItem[]; baseline: number; sessionID: string }) {
+function SidebarContentView(props: { api: TuiPluginApi; items: CostItem[]; baseline: number; sessionID: string; show: () => boolean }) {
   const [activeId, setActiveId] = createSignal<string>("");
 
   const dispose = props.api.event.on("session.updated" as any, (event: any) => {
@@ -75,29 +75,34 @@ function SidebarContentView(props: { api: TuiPluginApi; items: CostItem[]; basel
 
   return (
     <Show when={props.items.length > 0}>
-        <box gap={0}>
-          <box flexDirection="row" justifyContent="space-between">
-            <text fg={props.api.theme.current.text}><b>Costs</b></text>
-            <text fg={props.api.theme.current.textMuted}>$/1M tok</text>
-          </box>
-          <text fg={props.api.theme.current.textMuted}>[Opencode Go]</text>
-          <box gap={0}>
-          {props.items.map((m) => {
-            const mx = m.score ? m.score / props.baseline : 99;
-            const active = isActive(m.id);
-            const costFg = m.score ? costColor(mx, props.api.theme.current) : props.api.theme.current.textMuted;
-            const nameFg = active ? props.api.theme.current.accent : props.api.theme.current.textMuted;
-            return (
-              <box flexDirection="row" justifyContent="space-between">
-                <text fg={active ? props.api.theme.current.accent : costFg} wrapMode="none">{active ? "● " : "  "}{m.mult}</text>
-                <box flexDirection="row">
-                  <text fg="#666666" wrapMode="none">{m.recent ? "(recent) " : ""}</text>
-                  <text fg={nameFg} wrapMode="none">{m.name}</text>
-                </box>
-              </box>
-            );
-          })}
+      <box gap={0}>
+        <box flexDirection="row" justifyContent="space-between">
+          <text fg={props.api.theme.current.text}><b>Costs</b></text>
+          <text fg={props.api.theme.current.textMuted}>$/1M tok</text>
         </box>
+        <text fg={props.api.theme.current.textMuted}>[Opencode Go]</text>
+        <Show when={props.show()}>
+          <box gap={0}>
+            {props.items.map((m) => {
+              const mx = m.score ? m.score / props.baseline : 99;
+              const active = isActive(m.id);
+              const costFg = m.score ? costColor(mx, props.api.theme.current) : props.api.theme.current.textMuted;
+              const nameFg = active ? props.api.theme.current.accent : props.api.theme.current.textMuted;
+              return (
+                <box flexDirection="row" justifyContent="space-between">
+                  <text fg={active ? props.api.theme.current.accent : costFg} wrapMode="none">{active ? "● " : "  "}{m.mult}</text>
+                  <box flexDirection="row">
+                    <text fg="#666666" wrapMode="none">{m.recent ? "(recent) " : ""}</text>
+                    <text fg={nameFg} wrapMode="none">{m.name}</text>
+                  </box>
+                </box>
+              );
+            })}
+          </box>
+        </Show>
+        <Show when={!props.show()}>
+          <text fg={props.api.theme.current.textMuted}>Collapsed</text>
+        </Show>
       </box>
     </Show>
   );
@@ -148,9 +153,7 @@ const tui = async (api: TuiPluginApi) => {
     slots: {
       sidebar_content(_ctx: any, _props: { session_id: string }) {
         return (
-          <Show when={enabledGetter()}>
-            <SidebarContentView api={api} items={items} baseline={baseline} sessionID={_props.session_id} />
-          </Show>
+          <SidebarContentView api={api} items={items} baseline={baseline} sessionID={_props.session_id} show={enabledGetter} />
         );
       },
     },

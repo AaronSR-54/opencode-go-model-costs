@@ -1,6 +1,6 @@
 {
   "name": "@aaronsr-54/openode-go-model-costs",
-  "version": "1.1.4",
+  "version": "1.1.5",
   "description": "OpenCode TUI plugin that shows relative cost multipliers for Go provider models in the sidebar",
   "license": "MIT",
   "repository": {
