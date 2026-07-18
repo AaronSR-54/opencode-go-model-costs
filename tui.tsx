@@ -1,6 +1,6 @@
 /** @jsxImportSource @opentui/solid */
 import type { TuiPluginApi, TuiPluginModule } from "@opencode-ai/plugin/tui";
-import { Show, createSignal, createRoot, onCleanup } from "solid-js";
+import { Show, createSignal, onCleanup } from "solid-js";
 
 const SIDEBAR_ORDER = 200;
 const RECENT_WINDOW_DAYS = 30;
@@ -53,8 +53,16 @@ function getGoModels(api: TuiPluginApi): { items: CostItem[]; baseline: number }
   return { items, baseline: BASELINE };
 }
 
-function SidebarContentView(props: { api: TuiPluginApi; items: CostItem[]; baseline: number; sessionID: string; show: () => boolean }) {
+function SidebarContentView(props: { api: TuiPluginApi; items: CostItem[]; baseline: number; sessionID: string }) {
   const [activeId, setActiveId] = createSignal<string>("");
+  const initialCollapsed = props.api.kv.get("costs-collapsed", false) as boolean;
+  const [collapsed, setCollapsed] = createSignal(initialCollapsed);
+
+  const toggle = () => {
+    const next = !collapsed();
+    setCollapsed(next);
+    props.api.kv.set("costs-collapsed", next);
+  };
 
   const dispose = props.api.event.on("session.updated" as any, (event: any) => {
     const sid = event.properties?.info?.id;
@@ -76,12 +84,15 @@ function SidebarContentView(props: { api: TuiPluginApi; items: CostItem[]; basel
   return (
     <Show when={props.items.length > 0}>
       <box gap={0}>
-        <box flexDirection="row" justifyContent="space-between">
-          <text fg={props.api.theme.current.text}><b>Costs</b></text>
+        <box flexDirection="row" justifyContent="space-between" onMouseUp={toggle}>
+          <box flexDirection="row">
+            <text fg={props.api.theme.current.textMuted}>{collapsed() ? "▶" : "▼"} </text>
+            <text fg={props.api.theme.current.text}><b>Costs</b></text>
+          </box>
           <text fg={props.api.theme.current.textMuted}>$/1M tok</text>
         </box>
         <text fg={props.api.theme.current.textMuted}>[Opencode Go]</text>
-        <Show when={props.show()}>
+        <Show when={!collapsed()}>
           <box gap={0}>
             {props.items.map((m) => {
               const mx = m.score ? m.score / props.baseline : 99;
@@ -100,38 +111,13 @@ function SidebarContentView(props: { api: TuiPluginApi; items: CostItem[]; basel
             })}
           </box>
         </Show>
-        <Show when={!props.show()}>
-          <text fg={props.api.theme.current.textMuted}>Collapsed</text>
-        </Show>
       </box>
     </Show>
   );
 }
 
-let enabledGetter: () => boolean = () => true;
-let enabledSetter: (v: boolean) => void = () => {};
-
 const tui = async (api: TuiPluginApi) => {
   const { items, baseline } = getGoModels(api);
-
-  const initial = api.kv.get("costs-enabled", true) as boolean;
-
-  let disposeRoot: (() => void) | undefined;
-  disposeRoot = createRoot((dispose) => {
-    const [enabled, setEnabled] = createSignal<boolean>(initial);
-    enabledGetter = enabled;
-    enabledSetter = setEnabled;
-    return dispose;
-  });
-  api.lifecycle.onDispose(() => {
-    disposeRoot?.();
-  });
-
-  const toggle = () => {
-    const next = !enabledGetter();
-    enabledSetter(next);
-    api.kv.set("costs-enabled", next);
-  };
 
   if (api.command) {
     const disposeCmd = api.command.register(() => [
@@ -140,9 +126,8 @@ const tui = async (api: TuiPluginApi) => {
         value: "model-costs.toggle",
         description: "Show/hide the cost multiplier sidebar",
         category: "Model Costs",
-
         slash: { name: "toggle-costs" },
-        onSelect: () => toggle(),
+        onSelect: () => {},
       },
     ]);
     api.lifecycle.onDispose(() => disposeCmd());
@@ -153,7 +138,7 @@ const tui = async (api: TuiPluginApi) => {
     slots: {
       sidebar_content(_ctx: any, _props: { session_id: string }) {
         return (
-          <SidebarContentView api={api} items={items} baseline={baseline} sessionID={_props.session_id} show={enabledGetter} />
+          <SidebarContentView api={api} items={items} baseline={baseline} sessionID={_props.session_id} />
         );
       },
     },
