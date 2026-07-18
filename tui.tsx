@@ -75,12 +75,13 @@ function SidebarContentView(props: { api: TuiPluginApi; items: CostItem[]; basel
 
   return (
     <Show when={props.items.length > 0}>
-      <box gap={0}>
-        <box flexDirection="row" justifyContent="space-between">
-          <text fg={props.api.theme.current.text}><b>Cost Go</b></text>
-          <text fg={props.api.theme.current.textMuted}>$/1M tok</text>
-        </box>
         <box gap={0}>
+          <box flexDirection="row" justifyContent="space-between">
+            <text fg={props.api.theme.current.text}><b>Costs</b></text>
+            <text fg={props.api.theme.current.textMuted}>$/1M tok</text>
+          </box>
+          <text fg={props.api.theme.current.textMuted}>[Opencode Go]</text>
+          <box gap={0}>
           {props.items.map((m) => {
             const mx = m.score ? m.score / props.baseline : 99;
             const active = isActive(m.id);
@@ -130,9 +131,9 @@ const tui = async (api: TuiPluginApi) => {
   if (api.command) {
     const disposeCmd = api.command.register(() => [
       {
-        title: "Toggle Go Costs",
+        title: "Toggle Costs",
         value: "model-costs.toggle",
-        description: "Show/hide the Go model costs sidebar",
+        description: "Show/hide the cost multiplier sidebar",
         category: "Model Costs",
 
         slash: { name: "toggle-costs" },
