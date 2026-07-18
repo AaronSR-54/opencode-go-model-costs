@@ -85,20 +85,20 @@ function SidebarContentView(props: { api: TuiPluginApi; items: CostItem[]; basel
   return (
     <Show when={props.items.length > 0}>
       <box gap={0}>
-        <box flexDirection="row" justifyContent="space-between">
-          <box flexDirection="row">
-            <text fg={props.api.theme.current.text} onMouseDown={toggleCollapsed}>
-              <b>{toggleIcon()} Costs</b>
-            </text>
-            <Show when={collapsed()}>
-              <text fg={props.api.theme.current.textMuted}> ({props.items.length} models)</text>
-            </Show>
-          </box>
-          <text fg={props.api.theme.current.textMuted}>$/1M tok</text>
+        <box flexDirection="row">
+          <text fg={props.api.theme.current.text} onMouseDown={toggleCollapsed}>
+            <b>{toggleIcon()} Costs</b>
+          </text>
+          <Show when={collapsed()}>
+            <text fg={props.api.theme.current.textMuted}> ({props.items.length} models)</text>
+          </Show>
         </box>
         <Show when={!collapsed()}>
           <box gap={0}>
-            <text fg={props.api.theme.current.textMuted}>[Opencode Go]</text>
+            <box flexDirection="row" justifyContent="space-between">
+              <text fg={props.api.theme.current.textMuted}>[OpenCode Go]</text>
+              <text fg="#555555">$/1M tok</text>
+            </box>
             {props.items.map((m) => {
               const mx = m.score ? m.score / props.baseline : 99;
               const active = isActive(m.id);

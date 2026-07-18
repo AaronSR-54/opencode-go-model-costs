@@ -32,5 +32,5 @@ Restart opencode and the sidebar will appear automatically.
 
 ## Links
 
-- [npm](https://www.npmjs.com/package/@aaronsr-54/openode-go-model-costs)
-- [GitHub](https://github.com/AaronSR-54/openode-go-model-costs)
+- [npm](https://www.npmjs.com/package/@aaronsr-54/opencode-go-model-costs)
+- [GitHub](https://github.com/AaronSR-54/opencode-go-model-costs)
