@@ -7,9 +7,6 @@
     "type": "git",
     "url": "git+https://github.com/AaronSR-54/openode-go-model-costs.git"
   },
-  "publishConfig": {
-    "registry": "https://npm.pkg.github.com"
-  },
   "type": "module",
   "exports": {
     ".": {
