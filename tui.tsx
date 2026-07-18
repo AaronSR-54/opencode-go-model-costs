@@ -7,6 +7,9 @@ const RECENT_WINDOW_DAYS = 30;
 
 type CostItem = { id: string; name: string; mult: string; score: number | null; recent: boolean };
 
+let collapsedGetter: () => boolean = () => false;
+let collapsedSetter: (v: boolean) => void = () => {};
+
 function costColor(n: number, theme: TuiPluginApi["theme"]["current"]) {
   if (n <= 1.5) return theme.success;
   if (n <= 5) return theme.warning;
@@ -55,14 +58,7 @@ function getGoModels(api: TuiPluginApi): { items: CostItem[]; baseline: number }
 
 function SidebarContentView(props: { api: TuiPluginApi; items: CostItem[]; baseline: number; sessionID: string }) {
   const [activeId, setActiveId] = createSignal<string>("");
-  const initialCollapsed = props.api.kv.get("costs-collapsed", false) as boolean;
-  const [collapsed, setCollapsed] = createSignal(initialCollapsed);
-
-  const toggle = () => {
-    const next = !collapsed();
-    setCollapsed(next);
-    props.api.kv.set("costs-collapsed", next);
-  };
+  const collapsed = collapsedGetter;
 
   const dispose = props.api.event.on("session.updated" as any, (event: any) => {
     const sid = event.properties?.info?.id;
@@ -81,15 +77,21 @@ function SidebarContentView(props: { api: TuiPluginApi; items: CostItem[]; basel
     return aShort === idShort || a.endsWith("/" + id) || a.includes(id);
   };
 
+  const arrow = () => collapsed() ? "[+]" : "[-]";
+  const label = () => collapsed() ? "show" : "hide";
+
   return (
     <Show when={props.items.length > 0}>
       <box gap={0}>
-        <box flexDirection="row" justifyContent="space-between" onMouseUp={toggle}>
+        <box flexDirection="row" justifyContent="space-between">
           <box flexDirection="row">
-            <text fg={props.api.theme.current.text}>{collapsed() ? ">" : "v"} </text>
+            <text fg={props.api.theme.current.text}>{`  ${arrow()} `}</text>
             <text fg={props.api.theme.current.text}><b>Costs</b></text>
           </box>
-          <text fg={props.api.theme.current.textMuted}>$/1M tok</text>
+          <box flexDirection="row">
+            <text fg={props.api.theme.current.textMuted}>{`(${label()})  `}</text>
+            <text fg={props.api.theme.current.textMuted}>$/1M tok</text>
+          </box>
         </box>
         <text fg={props.api.theme.current.textMuted}>[Opencode Go]</text>
         <Show when={!collapsed()}>
@@ -119,15 +121,26 @@ function SidebarContentView(props: { api: TuiPluginApi; items: CostItem[]; basel
 const tui = async (api: TuiPluginApi) => {
   const { items, baseline } = getGoModels(api);
 
+  const initialCollapsed = api.kv.get("costs-collapsed", false) as boolean;
+  const [collapsed, setCollapsed] = createSignal(initialCollapsed);
+  collapsedGetter = collapsed;
+  collapsedSetter = setCollapsed;
+
+  const toggle = () => {
+    const next = !collapsedGetter();
+    collapsedSetter(next);
+    api.kv.set("costs-collapsed", next);
+  };
+
   if (api.command) {
     const disposeCmd = api.command.register(() => [
       {
         title: "Toggle Costs",
         value: "model-costs.toggle",
-        description: "Show/hide the cost multiplier sidebar",
+        description: "Show/hide the cost multiplier list",
         category: "Model Costs",
         slash: { name: "toggle-costs" },
-        onSelect: () => {},
+        onSelect: () => toggle(),
       },
     ]);
     api.lifecycle.onDispose(() => disposeCmd());
