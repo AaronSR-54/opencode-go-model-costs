@@ -55,6 +55,7 @@ function getGoModels(api: TuiPluginApi): { items: CostItem[]; baseline: number }
 
 function SidebarContentView(props: { api: TuiPluginApi; items: CostItem[]; baseline: number; sessionID: string }) {
   const [activeId, setActiveId] = createSignal<string>("");
+  const [collapsed, setCollapsed] = createSignal(props.api.kv.get("costs-collapsed", false) as boolean);
 
   const dispose = props.api.event.on("session.updated" as any, (event: any) => {
     const sid = event.properties?.info?.id;
@@ -73,24 +74,48 @@ function SidebarContentView(props: { api: TuiPluginApi; items: CostItem[]; basel
     return aShort === idShort || a.endsWith("/" + id) || a.includes(id);
   };
 
+  const toggleCollapsed = () => {
+    const next = !collapsed();
+    setCollapsed(next);
+    props.api.kv.set("costs-collapsed", next);
+  };
+
+  const toggleIcon = () => collapsed() ? "▶" : "▼";
+
   return (
     <Show when={props.items.length > 0}>
       <box gap={0}>
-        <text fg={props.api.theme.current.text}>
-          <b>Costs</b>
-        </text>
-        <box gap={0}>
-          {props.items.map((m) => {
-            const mx = m.score ? m.score / props.baseline : 99;
-            const active = isActive(m.id);
-            const nameFg = active ? props.api.theme.current.accent : props.api.theme.current.textMuted;
-            return (
-              <text fg={nameFg} wrapMode="none">
-                {active ? "● " : "  "}{m.mult}  {m.recent ? "(recent) " : ""}{m.name}
-              </text>
-            );
-          })}
+        <box flexDirection="row" justifyContent="space-between">
+          <box flexDirection="row">
+            <text fg={props.api.theme.current.text} onMouseDown={toggleCollapsed}>
+              <b>{toggleIcon()} Costs</b>
+            </text>
+            <Show when={collapsed()}>
+              <text fg={props.api.theme.current.textMuted}> ({props.items.length} models)</text>
+            </Show>
+          </box>
+          <text fg={props.api.theme.current.textMuted}>$/1M tok</text>
         </box>
+        <Show when={!collapsed()}>
+          <box gap={0}>
+            <text fg={props.api.theme.current.textMuted}>[Opencode Go]</text>
+            {props.items.map((m) => {
+              const mx = m.score ? m.score / props.baseline : 99;
+              const active = isActive(m.id);
+              const costFg = m.score ? costColor(mx, props.api.theme.current) : props.api.theme.current.textMuted;
+              const nameFg = active ? props.api.theme.current.accent : props.api.theme.current.textMuted;
+              return (
+                <box flexDirection="row" justifyContent="space-between">
+                  <text fg={active ? props.api.theme.current.accent : costFg} wrapMode="none">{active ? "● " : "  "}{m.mult}</text>
+                  <box flexDirection="row">
+                    <text fg="#666666" wrapMode="none">{m.recent ? "(recent) " : ""}</text>
+                    <text fg={nameFg} wrapMode="none">{m.name}</text>
+                  </box>
+                </box>
+              );
+            })}
+          </box>
+        </Show>
       </box>
     </Show>
   );
