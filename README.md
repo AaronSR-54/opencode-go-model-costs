@@ -1,4 +1,4 @@
-# model-costs
+# opencode-go-model-costs
 
 OpenCode TUI plugin that shows LLM model cost multipliers relative to a baseline (`minimax-m2.7`) directly in the sidebar.
 
@@ -18,11 +18,16 @@ Add to your `~/.config/opencode/opencode.json`:
 
 ```json
 {
-  "plugin": ["model-costs"]
+  "plugin": ["@aaronsr-54/opencode-go-model-costs"]
 }
 ```
 
 Restart opencode and the sidebar will appear automatically.
+
+### Migration
+
+`@aaronsr-54/openode-go-model-costs` is deprecated. Replace it with
+`@aaronsr-54/opencode-go-model-costs` in your OpenCode configuration.
 
 ## Usage
 
@@ -33,4 +38,5 @@ Restart opencode and the sidebar will appear automatically.
 ## Links
 
 - [npm](https://www.npmjs.com/package/@aaronsr-54/opencode-go-model-costs)
+- [GitHub Packages](https://github.com/AaronSR-54/opencode-go-model-costs/packages)
 - [GitHub](https://github.com/AaronSR-54/opencode-go-model-costs)
