@@ -183,16 +183,42 @@ const tui = async api => {
     items,
     baseline
   } = getGoModels(api);
+  const [enabled, setEnabled] = createSignal(api.kv.get("costs-enabled", true));
+  const toggle = () => {
+    const next = !enabled();
+    setEnabled(next);
+    api.kv.set("costs-enabled", next);
+  };
+  if (api.command) {
+    const disposeCommand = api.command.register(() => [{
+      title: "Toggle Go Costs",
+      value: "model-costs.toggle",
+      description: "Show/hide the Go model costs sidebar",
+      category: "Model Costs",
+      slash: {
+        name: "toggle-costs"
+      },
+      onSelect: toggle
+    }]);
+    api.lifecycle.onDispose(() => disposeCommand());
+  }
   api.slots.register({
     order: SIDEBAR_ORDER,
     slots: {
       sidebar_content(_ctx, _props) {
-        return _$createComponent(SidebarContentView, {
-          api: api,
-          items: items,
-          baseline: baseline,
-          get sessionID() {
-            return _props.session_id;
+        return _$createComponent(Show, {
+          get when() {
+            return enabled();
+          },
+          get children() {
+            return _$createComponent(SidebarContentView, {
+              api: api,
+              items: items,
+              baseline: baseline,
+              get sessionID() {
+                return _props.session_id;
+              }
+            });
           }
         });
       }

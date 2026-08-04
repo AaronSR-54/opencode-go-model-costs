@@ -123,13 +123,36 @@ function SidebarContentView(props: { api: TuiPluginApi; items: CostItem[]; basel
 
 const tui = async (api: TuiPluginApi) => {
   const { items, baseline } = getGoModels(api);
+  const [enabled, setEnabled] = createSignal(api.kv.get("costs-enabled", true) as boolean);
+
+  const toggle = () => {
+    const next = !enabled();
+    setEnabled(next);
+    api.kv.set("costs-enabled", next);
+  };
+
+  if (api.command) {
+    const disposeCommand = api.command.register(() => [
+      {
+        title: "Toggle Go Costs",
+        value: "model-costs.toggle",
+        description: "Show/hide the Go model costs sidebar",
+        category: "Model Costs",
+        slash: { name: "toggle-costs" },
+        onSelect: toggle,
+      },
+    ]);
+    api.lifecycle.onDispose(() => disposeCommand());
+  }
 
   api.slots.register({
     order: SIDEBAR_ORDER,
     slots: {
       sidebar_content(_ctx: any, _props: { session_id: string }) {
         return (
-          <SidebarContentView api={api} items={items} baseline={baseline} sessionID={_props.session_id} />
+          <Show when={enabled()}>
+            <SidebarContentView api={api} items={items} baseline={baseline} sessionID={_props.session_id} />
+          </Show>
         );
       },
     },
