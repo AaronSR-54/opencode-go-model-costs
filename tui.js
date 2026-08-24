@@ -1,4 +1,3 @@
-import { memo as _$memo } from "@opentui/solid";
 import { createComponent as _$createComponent } from "@opentui/solid";
 import { effect as _$effect } from "@opentui/solid";
 import { createTextNode as _$createTextNode } from "@opentui/solid";
@@ -11,6 +10,45 @@ import { createElement as _$createElement } from "@opentui/solid";
 import { Show, createSignal, onCleanup } from "solid-js";
 const SIDEBAR_ORDER = 200;
 const RECENT_WINDOW_DAYS = 30;
+const NAME_MAX_CHARS = 28;
+function clipName(name, max) {
+  if (max < 4) max = 4;
+  return name.length > max ? name.slice(0, max - 1) + "…" : name;
+}
+
+// Monthly usage included with each model on the OpenCode Go plan ($).
+// Source: https://opencode.ai/docs/go/ ("Usage" column). Models missing
+// from this map have no known limit and fall back to raw cost ranking.
+// Usage is metered as cost / limit, so a $15 model burns quota 4x faster
+// than a $60 one at the same dollar price.
+
+const USAGE_LIMITS = {
+  "grok-4.5": 15,
+  "gpt-5.6-luna": 15,
+  "glm-5.3": 15,
+  "glm-5.2": 60,
+  "glm-5.1": 60,
+  "kimi-k3": 15,
+  "kimi-k2.7-code": 60,
+  "kimi-k2.6": 60,
+  "mimo-v2.5": 60,
+  "mimo-v2.5-pro": 15,
+  "minimax-m3": 60,
+  "minimax-m2.7": 60,
+  "minimax-m2.5": 60,
+  "muse-spark-1.2-contributor": 60,
+  "qwen3.8-max": 15,
+  "qwen3.7-max": 60,
+  "qwen3.7-plus": 60,
+  "qwen3.6-plus": 60,
+  "deepseek-v4-pro": 15,
+  "deepseek-v4-flash": 30,
+  "deepseek-v4-flash-vision-exp": 15,
+  hy3: 60
+};
+const BASELINE_MODEL = "minimax-m2.7";
+const BASELINE_FALLBACK_COST = 0.66;
+const BASELINE_FALLBACK_LIMIT = 60;
 function costColor(n, theme) {
   if (n <= 1.5) return theme.success;
   if (n <= 5) return theme.warning;
@@ -21,8 +59,16 @@ function getGoModels(api) {
   const go = providers.find(p => p.id === "opencode-go" || p.id === "go" || RegExp("go", "i").test(p.name || ""));
   const models = go?.models ?? {};
   const entries = Object.entries(models);
-  const baseCost = models["minimax-m2.7"]?.cost;
-  const BASELINE = baseCost ? baseCost.input + baseCost.output * 0.3 : 0.66;
+
+  // Quota burn rate: share of the model's own monthly usage allowance
+  // consumed per blended 1M tokens. This is what actually depletes the
+  // shared 5h/weekly/monthly windows.
+  const baseLimit = USAGE_LIMITS[BASELINE_MODEL] ?? BASELINE_FALLBACK_LIMIT;
+  const baseCost = models[BASELINE_MODEL]?.cost;
+  const BASELINE_BURN = (baseCost ? baseCost.input + baseCost.output * 0.3 : BASELINE_FALLBACK_COST) / baseLimit;
+  function limitOf(id) {
+    return USAGE_LIMITS[id.split("/").pop() || id] ?? null;
+  }
   const dates = [];
   for (const [, m] of entries) {
     const d = Date.parse(m.release_date);
@@ -34,33 +80,54 @@ function getGoModels(api) {
     const d = Date.parse(m.release_date);
     return !isNaN(d) && d >= threshold;
   }
+  const fmtMult = n => n >= 10 ? Math.round(n) + "x" : n.toFixed(1) + "x";
   const items = entries.map(([id, m]) => {
     const c = m.cost;
     const recent = isRecent(m);
-    if (!c) return {
-      id,
-      name: m.name || id,
-      mult: "?",
-      score: null,
-      recent
-    };
+    if (!c) {
+      return {
+        id,
+        name: m.name || id,
+        mult: "?",
+        score: null,
+        burn: null,
+        limit: null,
+        recent
+      };
+    }
     const sc = c.input + c.output * 0.3;
-    const n = sc / BASELINE;
+    const limit = limitOf(id);
+    if (limit && limit > 0) {
+      const burn = sc / limit; // % of monthly allowance per 1M tok (fraction)
+      return {
+        id,
+        name: m.name || id,
+        score: sc,
+        burn,
+        limit,
+        mult: fmtMult(burn / BASELINE_BURN),
+        recent
+      };
+    }
+    // Unknown usage limit: rank by raw price against the baseline cost.
+    const rawMult = sc / (BASELINE_BURN * baseLimit);
     return {
       id,
       name: m.name || id,
       score: sc,
-      mult: n >= 10 ? Math.round(n) + "x" : n.toFixed(1) + "x",
+      burn: null,
+      limit: null,
+      mult: "~" + fmtMult(rawMult),
       recent
     };
   }).sort((a, b) => {
-    if (a.score === null) return 1;
-    if (b.score === null) return -1;
-    return a.score - b.score;
+    const ka = a.burn ?? a.score ?? Infinity;
+    const kb = b.burn ?? b.score ?? Infinity;
+    return ka - kb;
   });
   return {
     items,
-    baseline: BASELINE
+    baseline: BASELINE_BURN
   };
 }
 function SidebarContentView(props) {
@@ -136,13 +203,15 @@ function SidebarContentView(props) {
           _$setProp(_el$0, "flexDirection", "row");
           _$setProp(_el$0, "justifyContent", "space-between");
           _$insertNode(_el$1, _$createTextNode(`[OpenCode Go]`));
-          _$insertNode(_el$11, _$createTextNode(`$/1M tok`));
+          _$insertNode(_el$11, _$createTextNode(`use/1M tok`));
           _$setProp(_el$11, "fg", "#555555");
           _$insert(_el$9, () => props.items.map(m => {
-            const mx = m.score ? m.score / props.baseline : 99;
+            const mx = m.burn !== null ? m.burn / props.baseline : 99;
             const active = isActive(m.id);
             const costFg = m.score ? costColor(mx, props.api.theme.current) : props.api.theme.current.textMuted;
             const nameFg = active ? props.api.theme.current.accent : props.api.theme.current.textMuted;
+            const tag = m.recent ? "✦ " : "";
+            const label = clipName(m.name, NAME_MAX_CHARS - tag.length);
             return (() => {
               var _el$13 = _$createElement("box"),
                 _el$14 = _$createElement("text"),
@@ -161,10 +230,10 @@ function SidebarContentView(props) {
               _$setProp(_el$15, "flexDirection", "row");
               _$setProp(_el$16, "fg", "#666666");
               _$setProp(_el$16, "wrapMode", "none");
-              _$insert(_el$16, () => m.recent ? "(recent) " : "");
+              _$insert(_el$16, tag);
               _$setProp(_el$17, "fg", nameFg);
               _$setProp(_el$17, "wrapMode", "none");
-              _$insert(_el$17, () => m.name);
+              _$insert(_el$17, label);
               _$effect(_$p => _$setProp(_el$14, "fg", active ? props.api.theme.current.accent : costFg, _$p));
               return _el$13;
             })();
