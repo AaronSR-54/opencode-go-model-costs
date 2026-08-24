@@ -2,7 +2,7 @@
 
 OpenCode TUI plugin that ranks OpenCode Go models by **plan-quota burn rate** — how fast each model consumes your Go usage windows (5h / weekly / monthly) — directly in the sidebar.
 
-![screenshot](screenshot.png)
+
 
 ## Features
 
