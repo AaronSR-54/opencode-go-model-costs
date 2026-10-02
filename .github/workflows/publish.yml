@@ -18,14 +18,20 @@ jobs:
           node-version: "22"
           registry-url: "https://registry.npmjs.org"
       - run: npm ci --legacy-peer-deps || npm install --legacy-peer-deps
-      - run: npm publish --access public
+
+      - name: Publish to npmjs
+        continue-on-error: true
+        run: npm publish --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
           registry-url: "https://npm.pkg.github.com"
           scope: "@aaronsr-54"
-      - run: npm publish
+      - name: Publish to GitHub Packages
+        continue-on-error: true
+        run: npm publish
         env:
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
