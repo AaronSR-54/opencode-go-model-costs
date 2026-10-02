@@ -7,7 +7,7 @@ import { setProp as _$setProp } from "@opentui/solid";
 import { createElement as _$createElement } from "@opentui/solid";
 /** @jsxImportSource @opentui/solid */
 
-import { Show, createSignal, onCleanup } from "solid-js";
+import { Show, createMemo, createSignal, onCleanup } from "solid-js";
 const SIDEBAR_ORDER = 200;
 const RECENT_WINDOW_DAYS = 30;
 const NAME_MAX_CHARS = 28;
@@ -16,36 +16,70 @@ function clipName(name, max) {
   return name.length > max ? name.slice(0, max - 1) + "…" : name;
 }
 
-// Monthly usage included with each model on the OpenCode Go plan ($).
-// Source: https://opencode.ai/docs/go/ ("Usage" column). Models missing
-// from this map have no known limit and fall back to raw cost ranking.
-// Usage is metered as cost / limit, so a $15 model burns quota 4x faster
-// than a $60 one at the same dollar price.
+// Monthly usage limits are looked up at runtime from the official Go docs
+// instead of a hardcoded table, so models added/removed upstream are picked
+// up automatically. https://opencode.ai/docs/go.md serves the docs source
+// markdown containing the per-model "Monthly limit" table.
+// The docs' base "Go" table is used: Go Plus scales every limit by the same
+// factor, so relative burn rates are identical.
+const USAGE_LIMITS_URL = "https://opencode.ai/docs/go.md";
+const USAGE_LIMITS_CACHE_KEY = "costs-usage-limits";
+const USAGE_LIMITS_TTL_MS = 12 * 60 * 60 * 1000;
+// Free/unlimited models consume no quota. Kept JSON-safe for the kv cache.
+const UNLIMITED = Number.MAX_SAFE_INTEGER;
+// "DeepSeek V4.1 Flash (Off-Peak)" -> "deepseek-v4.1-flash", which matches
+// the provider's model id. Tier / price suffixes are dropped.
+function normalizeModelId(name) {
+  return name.replace(/\([^)]*\)/g, "").trim().toLowerCase().replace(/\s+/g, "-").replace(/[^a-z0-9.-]/g, "").replace(/-+/g, "-").replace(/^-|-$/g, "");
+}
 
-const USAGE_LIMITS = {
-  "grok-4.5": 15,
-  "gpt-5.6-luna": 15,
-  "glm-5.3": 15,
-  "glm-5.2": 60,
-  "glm-5.1": 60,
-  "kimi-k3": 15,
-  "kimi-k2.7-code": 60,
-  "kimi-k2.6": 60,
-  "mimo-v2.5": 60,
-  "mimo-v2.5-pro": 15,
-  "minimax-m3": 60,
-  "minimax-m2.7": 60,
-  "minimax-m2.5": 60,
-  "muse-spark-1.2-contributor": 60,
-  "qwen3.8-max": 15,
-  "qwen3.7-max": 60,
-  "qwen3.7-plus": 60,
-  "qwen3.6-plus": 60,
-  "deepseek-v4-pro": 15,
-  "deepseek-v4-flash": 30,
-  "deepseek-v4-flash-vision-exp": 15,
-  hy3: 60
-};
+// Parse the first "Monthly limit" markdown table from the docs source.
+function parseUsageLimits(markdown) {
+  const limits = {};
+  const lines = markdown.split(/\r?\n/);
+  let i = lines.findIndex(l => /^\s*\|.*Monthly limit/i.test(l));
+  if (i < 0) return limits;
+  i += 2; // skip the header + separator rows
+  for (; i < lines.length; i++) {
+    const line = lines[i];
+    if (!/^\s*\|/.test(line)) break;
+    const cells = line.split("|").slice(1, -1).map(s => s.trim());
+    if (cells.length < 2) continue;
+    const raw = cells[cells.length - 1];
+    const key = normalizeModelId(cells[0]);
+    if (!key) continue;
+    if (/unlimited/i.test(raw)) {
+      limits[key] = UNLIMITED;
+      continue;
+    }
+    const match = raw.match(/[0-9]+(?:\.[0-9]+)?/);
+    if (match) limits[key] = parseFloat(match[0]);
+  }
+  return limits;
+}
+
+// Fetch limits from the docs, falling back to a cached copy (even stale) when
+// the network is unavailable. Returns null only when nothing is available.
+async function loadUsageLimits(api) {
+  const cached = api.kv.get(USAGE_LIMITS_CACHE_KEY, null);
+  const hasCache = !!cached?.limits && Object.keys(cached.limits).length > 0;
+  if (hasCache && Date.now() - cached.at < USAGE_LIMITS_TTL_MS) return cached.limits;
+  try {
+    const res = await fetch(USAGE_LIMITS_URL, {
+      signal: AbortSignal.timeout(10000)
+    });
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    const limits = parseUsageLimits(await res.text());
+    if (Object.keys(limits).length === 0) throw new Error("empty usage table");
+    api.kv.set(USAGE_LIMITS_CACHE_KEY, {
+      at: Date.now(),
+      limits
+    });
+    return limits;
+  } catch {
+    return hasCache ? cached.limits : null;
+  }
+}
 const BASELINE_MODEL = "minimax-m2.7";
 const BASELINE_FALLBACK_COST = 0.66;
 const BASELINE_FALLBACK_LIMIT = 60;
@@ -54,7 +88,7 @@ function costColor(n, theme) {
   if (n <= 5) return theme.warning;
   return theme.error;
 }
-function getGoModels(api) {
+function getGoModels(api, limits) {
   const providers = api.state.provider;
   const go = providers.find(p => p.id === "opencode-go" || p.id === "go" || RegExp("go", "i").test(p.name || ""));
   const models = go?.models ?? {};
@@ -63,11 +97,11 @@ function getGoModels(api) {
   // Quota burn rate: share of the model's own monthly usage allowance
   // consumed per blended 1M tokens. This is what actually depletes the
   // shared 5h/weekly/monthly windows.
-  const baseLimit = USAGE_LIMITS[BASELINE_MODEL] ?? BASELINE_FALLBACK_LIMIT;
+  const baseLimit = limits[BASELINE_MODEL] ?? BASELINE_FALLBACK_LIMIT;
   const baseCost = models[BASELINE_MODEL]?.cost;
   const BASELINE_BURN = (baseCost ? baseCost.input + baseCost.output * 0.3 : BASELINE_FALLBACK_COST) / baseLimit;
   function limitOf(id) {
-    return USAGE_LIMITS[id.split("/").pop() || id] ?? null;
+    return limits[normalizeModelId(id.split("/").pop() || id)] ?? null;
   }
   const dates = [];
   for (const [, m] of entries) {
@@ -81,43 +115,34 @@ function getGoModels(api) {
     return !isNaN(d) && d >= threshold;
   }
   const fmtMult = n => n >= 10 ? Math.round(n) + "x" : n.toFixed(1) + "x";
+
+  // Models missing a price or a documented usage limit are shown with a "?"
+  // marker instead of an approximate multiplier.
   const items = entries.map(([id, m]) => {
-    const c = m.cost;
     const recent = isRecent(m);
-    if (!c) {
+    const c = m.cost;
+    const limit = limitOf(id);
+    if (!c || !limit || limit <= 0) {
+      const score = c ? c.input + c.output * 0.3 : null;
       return {
         id,
         name: m.name || id,
         mult: "?",
-        score: null,
+        score,
         burn: null,
         limit: null,
         recent
       };
     }
     const sc = c.input + c.output * 0.3;
-    const limit = limitOf(id);
-    if (limit && limit > 0) {
-      const burn = sc / limit; // % of monthly allowance per 1M tok (fraction)
-      return {
-        id,
-        name: m.name || id,
-        score: sc,
-        burn,
-        limit,
-        mult: fmtMult(burn / BASELINE_BURN),
-        recent
-      };
-    }
-    // Unknown usage limit: rank by raw price against the baseline cost.
-    const rawMult = sc / (BASELINE_BURN * baseLimit);
+    const burn = sc / limit; // share of monthly allowance per 1M tok
     return {
       id,
       name: m.name || id,
       score: sc,
-      burn: null,
-      limit: null,
-      mult: "~" + fmtMult(rawMult),
+      burn,
+      limit,
+      mult: fmtMult(burn / BASELINE_BURN),
       recent
     };
   }).sort((a, b) => {
@@ -208,7 +233,8 @@ function SidebarContentView(props) {
           _$insert(_el$9, () => props.items.map(m => {
             const mx = m.burn !== null ? m.burn / props.baseline : 99;
             const active = isActive(m.id);
-            const costFg = m.score ? costColor(mx, props.api.theme.current) : props.api.theme.current.textMuted;
+            const unknown = m.mult === "?";
+            const costFg = unknown || !m.score ? props.api.theme.current.textMuted : costColor(mx, props.api.theme.current);
             const nameFg = active ? props.api.theme.current.accent : props.api.theme.current.textMuted;
             const tag = m.recent ? "✦ " : "";
             const label = clipName(m.name, NAME_MAX_CHARS - tag.length);
@@ -247,12 +273,39 @@ function SidebarContentView(props) {
     }
   });
 }
+function LimitsUnavailable(props) {
+  return (() => {
+    var _el$18 = _$createElement("box"),
+      _el$19 = _$createElement("text"),
+      _el$20 = _$createElement("b"),
+      _el$22 = _$createElement("text");
+    _$insertNode(_el$18, _el$19);
+    _$insertNode(_el$18, _el$22);
+    _$setProp(_el$18, "gap", 0);
+    _$insertNode(_el$19, _el$20);
+    _$insertNode(_el$20, _$createTextNode(`▼ Costs`));
+    _$insertNode(_el$22, _$createTextNode(`[OpenCode Go] limits unavailable`));
+    _$effect(_p$ => {
+      var _v$ = props.api.theme.current.text,
+        _v$2 = props.api.theme.current.textMuted;
+      _v$ !== _p$.e && (_p$.e = _$setProp(_el$19, "fg", _v$, _p$.e));
+      _v$2 !== _p$.t && (_p$.t = _$setProp(_el$22, "fg", _v$2, _p$.t));
+      return _p$;
+    }, {
+      e: undefined,
+      t: undefined
+    });
+    return _el$18;
+  })();
+}
 const tui = async api => {
-  const {
-    items,
-    baseline
-  } = getGoModels(api);
   const [enabled, setEnabled] = createSignal(api.kv.get("costs-enabled", true));
+  const [usageLimits, setUsageLimits] = createSignal(undefined);
+  loadUsageLimits(api).then(limits => setUsageLimits(limits)).catch(() => setUsageLimits(null));
+  const data = createMemo(() => {
+    const limits = usageLimits();
+    return limits ? getGoModels(api, limits) : null;
+  });
   const toggle = () => {
     const next = !enabled();
     setEnabled(next);
@@ -280,13 +333,34 @@ const tui = async api => {
             return enabled();
           },
           get children() {
-            return _$createComponent(SidebarContentView, {
-              api: api,
-              items: items,
-              baseline: baseline,
-              get sessionID() {
-                return _props.session_id;
-              }
+            return _$createComponent(Show, {
+              get when() {
+                return data();
+              },
+              get fallback() {
+                return _$createComponent(Show, {
+                  get when() {
+                    return usageLimits() === null;
+                  },
+                  get children() {
+                    return _$createComponent(LimitsUnavailable, {
+                      api: api
+                    });
+                  }
+                });
+              },
+              children: d => _$createComponent(SidebarContentView, {
+                api: api,
+                get items() {
+                  return d().items;
+                },
+                get baseline() {
+                  return d().baseline;
+                },
+                get sessionID() {
+                  return _props.session_id;
+                }
+              })
             });
           }
         });
