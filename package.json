@@ -1,6 +1,6 @@
 {
   "name": "@aaronsr-54/opencode-go-model-costs",
-  "version": "1.5.0",
+  "version": "1.5.1",
   "description": "OpenCode TUI plugin that shows Go provider models ranked by plan-quota burn rate (cost relative to each model's usage limit)",
   "license": "MIT",
   "repository": {

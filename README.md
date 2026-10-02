@@ -1,26 +1,37 @@
 # opencode-go-model-costs
 
-OpenCode TUI plugin that ranks OpenCode Go models by **plan-quota burn rate** — how fast each model consumes your Go usage windows (5h / weekly / monthly) — directly in the sidebar.
+OpenCode TUI plugin that ranks OpenCode Go models by **plan-quota burn rate** —
+how fast each model consumes your Go usage windows (5h / weekly / monthly) —
+directly in the sidebar.
 
 ![screenshot](screenshot.png)
 
-## Features
+## What it does
 
-- Ranks models by quota consumption, not raw price: a model with a $15 usage limit burns your plan 4x faster than one with a $60 limit at the same dollar cost
-- Usage limits are looked up at runtime from the official docs, not hardcoded, so new/changed models are picked up automatically
-- Multiplier is relative to the baseline (`minimax-m2.7`): `1.0x` = burns quota at the same rate
-- Models missing a price or a documented limit show `?`; free/unlimited models show `0.0x`
-- Color-coded: green (≤1.5x), yellow (≤5x), red (>5x)
-- Marks models released in the last 30 days with a `✦` tag
-- Truncates long model names (`…`) so rows never overflow the sidebar
-- Highlights the currently active model
-- Toggle sidebar visibility via `/toggle-costs`
+Adds a collapsible **Costs** panel to the session sidebar:
+
+```
+▼ Costs
+[OpenCode Go]                     use/1M tok
+  0.4x   ✦ MiMo-V2.6-Flash
+  1.0x     MiniMax M2.7
+  2.1x     Qwen3.8 Max
+  ...
+```
+
+- **Left column** — the burn multiplier relative to the baseline model
+  (`minimax-m2.7`). `1.0x` burns quota at the same rate as the baseline;
+  higher is more expensive per unit of plan quota.
+- **Right column** — the model name. The currently active model is marked
+  with `●`; models released in the last 30 days carry a `✦` tag.
+- Click the **Costs** header to collapse/expand the panel. The collapsed
+  state shows the model count and is remembered across sessions.
 
 ## How it's calculated
 
-Go meters usage as `cost × (60 / model_usage_limit)` against shared dollar windows
-(see the [Usage column](https://opencode.ai/docs/go/#usage-limits) in the official docs).
-The plugin therefore scores each model as:
+Go meters usage as `cost × (60 / model_usage_limit)` against shared dollar
+windows (see the [usage-limits table](https://opencode.ai/docs/go/#usage-limits)
+in the official docs). The plugin scores each model as:
 
 ```
 burn = blended_cost_per_1M_tokens / usage_limit
@@ -29,11 +40,29 @@ mult = burn / burn(minimax-m2.7)
 
 where `blended_cost = input + output * 0.3` per 1M tokens.
 
-Prices come from the provider catalog (models.dev); usage limits are parsed
-from the monthly-limit table at
-[`opencode.ai/docs/go.md`](https://opencode.ai/docs/go.md) and cached for 12h.
-The base "Go" table is used — Go Plus scales every limit by the same factor,
-so rankings are identical.
+Prices come from the provider catalog (models.dev). Usage limits are **not
+hardcoded**: they are parsed at runtime from the monthly-limit table at
+[`opencode.ai/docs/go.md`](https://opencode.ai/docs/go.md), so models
+added/removed/changed upstream are picked up automatically. The fetched
+table is cached in the plugin's local storage for 12h and reused (even if
+stale) whenever the network is unavailable.
+
+The base **Go** table is used. Go Plus scales every limit by the same
+factor, so the relative rankings are identical.
+
+## Rendering rules
+
+- **Colors** — green (≤1.5x), yellow (≤5x), red (>5x).
+- **`?`** — the model has no price or no documented usage limit; it is not
+  scored and is sorted last.
+- **`0.0x`** — a free / unlimited model (e.g. `longcat-2.5-preview-free`),
+  which consumes no quota.
+- **`✦`** — model released in the last 30 days.
+- Long model names are truncated with `…` so rows never overflow the
+  sidebar.
+- If the limits table can't be loaded at all (offline with no cached copy),
+  the panel shows a `[OpenCode Go] limits unavailable` notice instead of
+  model rows.
 
 ## Install
 
@@ -54,15 +83,8 @@ Restart opencode and the sidebar will appear automatically.
 
 ## Usage
 
-- **Toggle**: Run `/toggle-costs` to show/hide the sidebar
-- **Colors**: Green = low quota burn, Yellow = moderate, Red = high
-- **`?`**: usage limit unknown for that model (or price missing)
-- **`0.0x`**: free/unlimited model, consumes no quota
-- **✦**: model released in the last 30 days
-
-If the limits can't be loaded (offline and no cached copy), the sidebar shows
-a `limits unavailable` notice instead of model rows. A cached copy is reused
-whenever the network is down.
+- **Toggle visibility**: run `/toggle-costs` to show/hide the whole panel.
+- **Collapse**: click the `▼ Costs` / `▶ Costs` header.
 
 ## Links
 
