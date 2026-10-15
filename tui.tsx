@@ -12,12 +12,17 @@ function clipName(name: string, max: number): string {
 }
 
 // Monthly usage limits are looked up at runtime from the official Go docs
-// instead of a hardcoded table, so models added/removed upstream are picked
-// up automatically. https://opencode.ai/docs/go.md serves the docs source
-// markdown containing the per-model "Monthly limit" table.
+// instead of a hardcoded table, so models added/removed/changed upstream are
+// picked up automatically. Sources are tried in order: the legacy markdown
+// endpoint first, then the current docs page (HTML). Each contains the
+// per-model "Monthly limit" table.
 // The docs' base "Go" table is used: Go Plus scales every limit by the same
 // factor, so relative burn rates are identical.
-const USAGE_LIMITS_URL = "https://opencode.ai/docs/go.md";
+const USAGE_LIMITS_URLS = [
+  "https://opencode.ai/docs/go.md",
+  "https://opencode.ai/v2/docs/console/go/",
+  "https://opencode.ai/docs/go/",
+];
 const USAGE_LIMITS_CACHE_KEY = "costs-usage-limits";
 const USAGE_LIMITS_TTL_MS = 12 * 60 * 60 * 1000;
 // Free/unlimited models consume no quota. Kept JSON-safe for the kv cache.
@@ -38,8 +43,28 @@ function normalizeModelId(name: string): string {
     .replace(/^-|-$/g, "");
 }
 
+// Docs names and provider model ids don't always agree on separators: the docs
+// write "Claude Haiku 5.5" (-> claude-haiku-5.5) while the catalog id is
+// "claude-haiku-5-5". Collapse dots/dashes so both sides match.
+function matchKey(name: string): string {
+  return normalizeModelId(name).replace(/\./g, "-");
+}
+
+// Index limits by separator-insensitive key so ids like claude-haiku-5-5 find
+// the docs' claude-haiku-5.5 entry (and vice versa).
+function buildLimitIndex(limits: UsageLimits): UsageLimits {
+  const index: UsageLimits = {};
+  for (const [key, value] of Object.entries(limits)) index[matchKey(key)] = value;
+  return index;
+}
+
+function firstNumber(raw: string): number | null {
+  const match = raw.match(/\$\s*([0-9][0-9,]*(?:\.[0-9]+)?)/) ?? raw.match(/([0-9][0-9,]*(?:\.[0-9]+)?)/);
+  return match ? parseFloat(match[1].replace(/,/g, "")) : null;
+}
+
 // Parse the first "Monthly limit" markdown table from the docs source.
-function parseUsageLimits(markdown: string): UsageLimits {
+function parseLimitsFromMarkdown(markdown: string): UsageLimits {
   const limits: UsageLimits = {};
   const lines = markdown.split(/\r?\n/);
   let i = lines.findIndex((l) => /^\s*\|.*Monthly limit/i.test(l));
@@ -57,10 +82,50 @@ function parseUsageLimits(markdown: string): UsageLimits {
       limits[key] = UNLIMITED;
       continue;
     }
-    const match = raw.match(/[0-9]+(?:\.[0-9]+)?/);
-    if (match) limits[key] = parseFloat(match[0]);
+    const value = firstNumber(raw);
+    if (value !== null) limits[key] = value;
   }
   return limits;
+}
+
+function stripHtml(html: string): string {
+  return html
+    .replace(/<[^>]*>/g, " ")
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&amp;/gi, "&")
+    .replace(/&#39;/g, "'")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+// Parse the per-model "Monthly limit" table rendered on the docs page. Struck
+// through old prices (<del>) are dropped so the current value wins.
+function parseLimitsFromHtml(html: string): UsageLimits {
+  const limits: UsageLimits = {};
+  const tables = html.match(/<table[\s\S]*?<\/table>/gi);
+  const table = tables?.find((t) => /Monthly limit/i.test(t));
+  if (!table) return limits;
+  const rows = table.match(/<tr[\s\S]*?<\/tr>/gi) ?? [];
+  for (const row of rows) {
+    const cellHtml = row.match(/<t[hd][\s\S]*?<\/t[hd]>/gi) ?? [];
+    const cells = cellHtml.map((c) => stripHtml(c.replace(/<del[\s\S]*?<\/del>/gi, "")));
+    if (cells.length < 2) continue;
+    if (/^model$/i.test(cells[0])) continue;
+    const key = normalizeModelId(cells[0]);
+    if (!key) continue;
+    const raw = cells[cells.length - 1];
+    if (/unlimited/i.test(raw)) {
+      limits[key] = UNLIMITED;
+      continue;
+    }
+    const value = firstNumber(raw);
+    if (value !== null) limits[key] = value;
+  }
+  return limits;
+}
+
+function parseUsageLimits(body: string): UsageLimits {
+  return /<table/i.test(body) ? parseLimitsFromHtml(body) : parseLimitsFromMarkdown(body);
 }
 
 // Fetch limits from the docs, falling back to a cached copy (even stale) when
@@ -69,16 +134,19 @@ async function loadUsageLimits(api: TuiPluginApi): Promise<UsageLimits | null> {
   const cached = api.kv.get<{ at: number; limits: UsageLimits } | null>(USAGE_LIMITS_CACHE_KEY, null);
   const hasCache = !!cached?.limits && Object.keys(cached.limits).length > 0;
   if (hasCache && Date.now() - cached!.at < USAGE_LIMITS_TTL_MS) return cached!.limits;
-  try {
-    const res = await fetch(USAGE_LIMITS_URL, { signal: AbortSignal.timeout(10000) });
-    if (!res.ok) throw new Error("HTTP " + res.status);
-    const limits = parseUsageLimits(await res.text());
-    if (Object.keys(limits).length === 0) throw new Error("empty usage table");
-    api.kv.set(USAGE_LIMITS_CACHE_KEY, { at: Date.now(), limits });
-    return limits;
-  } catch {
-    return hasCache ? cached!.limits : null;
+  for (const url of USAGE_LIMITS_URLS) {
+    try {
+      const res = await fetch(url, { signal: AbortSignal.timeout(10000) });
+      if (!res.ok) continue;
+      const limits = parseUsageLimits(await res.text());
+      if (Object.keys(limits).length === 0) continue;
+      api.kv.set(USAGE_LIMITS_CACHE_KEY, { at: Date.now(), limits });
+      return limits;
+    } catch {
+      // try the next source
+    }
   }
+  return hasCache ? cached!.limits : null;
 }
 
 const BASELINE_MODEL = "minimax-m2.7";
@@ -112,13 +180,14 @@ function getGoModels(api: TuiPluginApi, limits: UsageLimits): { items: CostItem[
   // Quota burn rate: share of the model's own monthly usage allowance
   // consumed per blended 1M tokens. This is what actually depletes the
   // shared 5h/weekly/monthly windows.
-  const baseLimit = limits[BASELINE_MODEL] ?? BASELINE_FALLBACK_LIMIT;
+  const limitIndex = buildLimitIndex(limits);
+  const baseLimit = limitIndex[matchKey(BASELINE_MODEL)] ?? BASELINE_FALLBACK_LIMIT;
   const baseCost = models[BASELINE_MODEL]?.cost;
   const BASELINE_BURN =
     (baseCost ? baseCost.input + baseCost.output * 0.3 : BASELINE_FALLBACK_COST) / baseLimit;
 
   function limitOf(id: string): number | null {
-    return limits[normalizeModelId(id.split("/").pop() || id)] ?? null;
+    return limitIndex[matchKey(id.split("/").pop() || id)] ?? null;
   }
 
   const dates: number[] = [];
