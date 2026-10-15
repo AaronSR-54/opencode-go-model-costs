@@ -41,11 +41,16 @@ mult = burn / burn(minimax-m2.7)
 where `blended_cost = input + output * 0.3` per 1M tokens.
 
 Prices come from the provider catalog (models.dev). Usage limits are **not
-hardcoded**: they are parsed at runtime from the monthly-limit table at
-[`opencode.ai/docs/go.md`](https://opencode.ai/docs/go.md), so models
+hardcoded**: they are parsed at runtime from the monthly-limit table on the
+official [Go docs page](https://opencode.ai/v2/docs/console/go/) (with the
+legacy `go.md` markdown endpoint tried first as a fallback), so models
 added/removed/changed upstream are picked up automatically. The fetched
 table is cached in the plugin's local storage for 12h and reused (even if
 stale) whenever the network is unavailable.
+
+Name matching between the docs table and the catalog model ids ignores
+dots-vs-dashes, so the docs' `claude-haiku-5.5` resolves to the catalog id
+`claude-haiku-5-5`.
 
 The base **Go** table is used. Go Plus scales every limit by the same
 factor, so the relative rankings are identical.
