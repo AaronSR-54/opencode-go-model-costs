@@ -69,6 +69,17 @@ factor, so the relative rankings are identical.
   the panel shows a `[OpenCode Go] limits unavailable` notice instead of
   model rows.
 
+## Compatibility
+
+Works on both OpenCode V1 and V2. The TUI entrypoint exports a dual module
+(`{ id, tui, setup }`): V1 loads the `tui` adapter and V2 loads the `setup`
+adapter, each on its own runtime API, and both share the same cost computation
+and panel rendering. The server entrypoint is likewise a no-op on either
+version. No extra configuration is needed beyond registering the plugin.
+
+After updating the package, **restart OpenCode** so V2 picks up the new panel;
+V2 loads plugin modules at startup and keeps the old one until you restart.
+
 ## Install
 
 Run the bundled `init` command:
