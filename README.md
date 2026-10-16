@@ -71,15 +71,30 @@ factor, so the relative rankings are identical.
 
 ## Install
 
-Add to your `~/.config/opencode/opencode.json`:
+Run the bundled `init` command:
+
+```bash
+npx @aaronsr-54/opencode-go-model-costs init
+```
+
+It registers the plugin in your global OpenCode config
+(`~/.config/opencode/opencode.json`, or `opencode.jsonc` if that's the one you
+have), creating the file with the OpenCode `$schema` when it doesn't exist yet.
+It preserves the rest of your config, including JSONC comments, and is
+idempotent: running it again when the plugin is already listed changes nothing.
+
+Restart opencode and the sidebar will appear automatically.
+
+### Manual install
+
+If you prefer, add the entry to your `~/.config/opencode/opencode.json`
+yourself and restart opencode:
 
 ```json
 {
   "plugin": ["@aaronsr-54/opencode-go-model-costs"]
 }
 ```
-
-Restart opencode and the sidebar will appear automatically.
 
 ### Migration
 
