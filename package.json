@@ -1,6 +1,6 @@
 {
   "name": "@aaronsr-54/opencode-go-model-costs",
-  "version": "1.6.1",
+  "version": "1.7.0",
   "description": "OpenCode TUI plugin that shows Go provider models ranked by plan-quota burn rate (cost relative to each model's usage limit)",
   "license": "MIT",
   "repository": {
@@ -24,17 +24,20 @@
     "opencode-go-model-costs": "./bin/init.js"
   },
   "dependencies": {
-    "@opentui/solid": "^0.4.3",
+    "@opentui/solid": ">=0.5.8",
     "jsonc-parser": "^3.3.1",
     "solid-js": "^1.9.12"
   },
   "peerDependencies": {
-    "@opencode-ai/plugin": "^1.4.3"
+    "@opencode-ai/plugin": "^1.4.3",
+    "@opentui/core": ">=0.5.8"
   },
   "files": [
     "server.js",
     "tui.tsx",
     "tui.js",
+    "tui-core.js",
+    "tui-v2-types.ts",
     "bin",
     "package.json"
   ],
@@ -44,8 +47,8 @@
     "prepublishOnly": "node build-tui.mjs"
   },
   "devDependencies": {
-    "@babel/core": "^8.0.1",
-    "@babel/preset-typescript": "^8.0.1",
+    "@babel/core": "^7.26.0",
+    "@babel/preset-typescript": "^7.26.0",
     "babel-preset-solid": "^1.9.12"
   }
 }
