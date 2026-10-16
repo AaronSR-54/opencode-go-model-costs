@@ -8,326 +8,124 @@ import { createElement as _$createElement } from "@opentui/solid";
 /** @jsxImportSource @opentui/solid */
 
 import { Show, createMemo, createSignal, onCleanup } from "solid-js";
-const SIDEBAR_ORDER = 200;
-const RECENT_WINDOW_DAYS = 30;
-const NAME_MAX_CHARS = 28;
-function clipName(name, max) {
-  if (max < 4) max = 4;
-  return name.length > max ? name.slice(0, max - 1) + "…" : name;
+import { NAME_MAX_CHARS, SIDEBAR_ORDER, buildCostItems, clipName, costColorKey, isGoProvider, kvCache, loadUsageLimits, v1Theme, v2Theme } from "./tui-core.js";
+function readStore(value) {
+  return typeof value === "function" ? value() : value;
 }
-
-// Monthly usage limits are looked up at runtime from the official Go docs
-// instead of a hardcoded table, so models added/removed/changed upstream are
-// picked up automatically. Sources are tried in order: the legacy markdown
-// endpoint first, then the current docs page (HTML). Each contains the
-// per-model "Monthly limit" table.
-// The docs' base "Go" table is used: Go Plus scales every limit by the same
-// factor, so relative burn rates are identical.
-const USAGE_LIMITS_URLS = ["https://opencode.ai/docs/go.md", "https://opencode.ai/v2/docs/console/go/", "https://opencode.ai/docs/go/"];
-const USAGE_LIMITS_CACHE_KEY = "costs-usage-limits";
-const USAGE_LIMITS_TTL_MS = 12 * 60 * 60 * 1000;
-// Free/unlimited models consume no quota. Kept JSON-safe for the kv cache.
-const UNLIMITED = Number.MAX_SAFE_INTEGER;
-// "DeepSeek V4.1 Flash (Off-Peak)" -> "deepseek-v4.1-flash", which matches
-// the provider's model id. Tier / price suffixes are dropped.
-function normalizeModelId(name) {
-  return name.replace(/\([^)]*\)/g, "").trim().toLowerCase().replace(/\s+/g, "-").replace(/[^a-z0-9.-]/g, "").replace(/-+/g, "-").replace(/^-|-$/g, "");
-}
-
-// Docs names and provider model ids don't always agree on separators: the docs
-// write "Claude Haiku 5.5" (-> claude-haiku-5.5) while the catalog id is
-// "claude-haiku-5-5". Collapse dots/dashes so both sides match.
-function matchKey(name) {
-  return normalizeModelId(name).replace(/\./g, "-");
-}
-
-// Index limits by separator-insensitive key so ids like claude-haiku-5-5 find
-// the docs' claude-haiku-5.5 entry (and vice versa).
-function buildLimitIndex(limits) {
-  const index = {};
-  for (const [key, value] of Object.entries(limits)) index[matchKey(key)] = value;
-  return index;
-}
-function firstNumber(raw) {
-  const match = raw.match(/\$\s*([0-9][0-9,]*(?:\.[0-9]+)?)/) ?? raw.match(/([0-9][0-9,]*(?:\.[0-9]+)?)/);
-  return match ? parseFloat(match[1].replace(/,/g, "")) : null;
-}
-
-// Parse the first "Monthly limit" markdown table from the docs source.
-function parseLimitsFromMarkdown(markdown) {
-  const limits = {};
-  const lines = markdown.split(/\r?\n/);
-  let i = lines.findIndex(l => /^\s*\|.*Monthly limit/i.test(l));
-  if (i < 0) return limits;
-  i += 2; // skip the header + separator rows
-  for (; i < lines.length; i++) {
-    const line = lines[i];
-    if (!/^\s*\|/.test(line)) break;
-    const cells = line.split("|").slice(1, -1).map(s => s.trim());
-    if (cells.length < 2) continue;
-    const raw = cells[cells.length - 1];
-    const key = normalizeModelId(cells[0]);
-    if (!key) continue;
-    if (/unlimited/i.test(raw)) {
-      limits[key] = UNLIMITED;
-      continue;
-    }
-    const value = firstNumber(raw);
-    if (value !== null) limits[key] = value;
-  }
-  return limits;
-}
-function stripHtml(html) {
-  return html.replace(/<[^>]*>/g, " ").replace(/&nbsp;/gi, " ").replace(/&amp;/gi, "&").replace(/&#39;/g, "'").replace(/\s+/g, " ").trim();
-}
-
-// Parse the per-model "Monthly limit" table rendered on the docs page. Struck
-// through old prices (<del>) are dropped so the current value wins.
-function parseLimitsFromHtml(html) {
-  const limits = {};
-  const tables = html.match(/<table[\s\S]*?<\/table>/gi);
-  const table = tables?.find(t => /Monthly limit/i.test(t));
-  if (!table) return limits;
-  const rows = table.match(/<tr[\s\S]*?<\/tr>/gi) ?? [];
-  for (const row of rows) {
-    const cellHtml = row.match(/<t[hd][\s\S]*?<\/t[hd]>/gi) ?? [];
-    const cells = cellHtml.map(c => stripHtml(c.replace(/<del[\s\S]*?<\/del>/gi, "")));
-    if (cells.length < 2) continue;
-    if (/^model$/i.test(cells[0])) continue;
-    const key = normalizeModelId(cells[0]);
-    if (!key) continue;
-    const raw = cells[cells.length - 1];
-    if (/unlimited/i.test(raw)) {
-      limits[key] = UNLIMITED;
-      continue;
-    }
-    const value = firstNumber(raw);
-    if (value !== null) limits[key] = value;
-  }
-  return limits;
-}
-function parseUsageLimits(body) {
-  return /<table/i.test(body) ? parseLimitsFromHtml(body) : parseLimitsFromMarkdown(body);
-}
-
-// Fetch limits from the docs, falling back to a cached copy (even stale) when
-// the network is unavailable. Returns null only when nothing is available.
-async function loadUsageLimits(api) {
-  const cached = api.kv.get(USAGE_LIMITS_CACHE_KEY, null);
-  const hasCache = !!cached?.limits && Object.keys(cached.limits).length > 0;
-  if (hasCache && Date.now() - cached.at < USAGE_LIMITS_TTL_MS) return cached.limits;
-  for (const url of USAGE_LIMITS_URLS) {
-    try {
-      const res = await fetch(url, {
-        signal: AbortSignal.timeout(10000)
-      });
-      if (!res.ok) continue;
-      const limits = parseUsageLimits(await res.text());
-      if (Object.keys(limits).length === 0) continue;
-      api.kv.set(USAGE_LIMITS_CACHE_KEY, {
-        at: Date.now(),
-        limits
-      });
-      return limits;
-    } catch {
-      // try the next source
-    }
-  }
-  return hasCache ? cached.limits : null;
-}
-const BASELINE_MODEL = "minimax-m2.7";
-const BASELINE_FALLBACK_COST = 0.66;
-const BASELINE_FALLBACK_LIMIT = 60;
-function costColor(n, theme) {
-  if (n <= 1.5) return theme.success;
-  if (n <= 5) return theme.warning;
-  return theme.error;
-}
-function getGoModels(api, limits) {
-  const providers = api.state.provider;
-  const go = providers.find(p => p.id === "opencode-go" || p.id === "go" || RegExp("go", "i").test(p.name || ""));
-  const models = go?.models ?? {};
-  const entries = Object.entries(models);
-
-  // Quota burn rate: share of the model's own monthly usage allowance
-  // consumed per blended 1M tokens. This is what actually depletes the
-  // shared 5h/weekly/monthly windows.
-  const limitIndex = buildLimitIndex(limits);
-  const baseLimit = limitIndex[matchKey(BASELINE_MODEL)] ?? BASELINE_FALLBACK_LIMIT;
-  const baseCost = models[BASELINE_MODEL]?.cost;
-  const BASELINE_BURN = (baseCost ? baseCost.input + baseCost.output * 0.3 : BASELINE_FALLBACK_COST) / baseLimit;
-  function limitOf(id) {
-    return limitIndex[matchKey(id.split("/").pop() || id)] ?? null;
-  }
-  const dates = [];
-  for (const [, m] of entries) {
-    const d = Date.parse(m.release_date);
-    if (!isNaN(d)) dates.push(d);
-  }
-  const newest = dates.length > 0 ? Math.max(...dates) : Date.now();
-  const threshold = newest - RECENT_WINDOW_DAYS * 86400000;
-  function isRecent(m) {
-    const d = Date.parse(m.release_date);
-    return !isNaN(d) && d >= threshold;
-  }
-  const fmtMult = n => n >= 10 ? Math.round(n) + "x" : n.toFixed(1) + "x";
-
-  // Models missing a price or a documented usage limit are shown with a "?"
-  // marker instead of an approximate multiplier.
-  const items = entries.map(([id, m]) => {
-    const recent = isRecent(m);
-    const c = m.cost;
-    const limit = limitOf(id);
-    if (!c || !limit || limit <= 0) {
-      const score = c ? c.input + c.output * 0.3 : null;
-      return {
-        id,
-        name: m.name || id,
-        mult: "?",
-        score,
-        burn: null,
-        limit: null,
-        recent
-      };
-    }
-    const sc = c.input + c.output * 0.3;
-    const burn = sc / limit; // share of monthly allowance per 1M tok
-    return {
-      id,
-      name: m.name || id,
-      score: sc,
-      burn,
-      limit,
-      mult: fmtMult(burn / BASELINE_BURN),
-      recent
-    };
-  }).sort((a, b) => {
-    const ka = a.burn ?? a.score ?? Infinity;
-    const kb = b.burn ?? b.score ?? Infinity;
-    return ka - kb;
-  });
-  return {
-    items,
-    baseline: BASELINE_BURN
-  };
-}
-function SidebarContentView(props) {
-  const [activeId, setActiveId] = createSignal("");
-  const [collapsed, setCollapsed] = createSignal(props.api.kv.get("costs-collapsed", false));
-  const dispose = props.api.event.on("session.updated", event => {
-    const sid = event.properties?.info?.id;
-    if (sid && sid !== props.sessionID) return;
-    const id = event.properties?.info?.model?.id;
-    if (id) setActiveId(id);
-  });
-  onCleanup(dispose);
-  const isActive = id => {
-    const a = activeId();
-    if (!a) return false;
-    if (a === id) return true;
-    const aShort = a.split("/").pop() || "";
-    const idShort = id.split("/").pop() || "";
-    return aShort === idShort || a.endsWith("/" + id) || a.includes(id);
-  };
-  const toggleCollapsed = () => {
-    const next = !collapsed();
-    setCollapsed(next);
-    props.api.kv.set("costs-collapsed", next);
-  };
-  const toggleIcon = () => collapsed() ? "▶" : "▼";
-  return _$createComponent(Show, {
-    get when() {
-      return props.items.length > 0;
-    },
-    get children() {
-      var _el$ = _$createElement("box"),
-        _el$2 = _$createElement("box"),
-        _el$3 = _$createElement("text"),
-        _el$4 = _$createElement("b"),
-        _el$5 = _$createTextNode(` Costs`);
-      _$insertNode(_el$, _el$2);
-      _$setProp(_el$, "gap", 0);
-      _$insertNode(_el$2, _el$3);
-      _$setProp(_el$2, "flexDirection", "row");
-      _$insertNode(_el$3, _el$4);
-      _$setProp(_el$3, "onMouseDown", toggleCollapsed);
-      _$insertNode(_el$4, _el$5);
-      _$insert(_el$4, toggleIcon, _el$5);
-      _$insert(_el$2, _$createComponent(Show, {
-        get when() {
-          return collapsed();
-        },
-        get children() {
-          var _el$6 = _$createElement("text"),
-            _el$7 = _$createTextNode(` (`),
-            _el$8 = _$createTextNode(` models)`);
-          _$insertNode(_el$6, _el$7);
-          _$insertNode(_el$6, _el$8);
-          _$insert(_el$6, () => props.items.length, _el$8);
-          _$effect(_$p => _$setProp(_el$6, "fg", props.api.theme.current.textMuted, _$p));
-          return _el$6;
-        }
-      }), null);
-      _$insert(_el$, _$createComponent(Show, {
-        get when() {
-          return !collapsed();
-        },
-        get children() {
-          var _el$9 = _$createElement("box"),
-            _el$0 = _$createElement("box"),
-            _el$1 = _$createElement("text"),
-            _el$11 = _$createElement("text");
-          _$insertNode(_el$9, _el$0);
-          _$setProp(_el$9, "gap", 0);
-          _$insertNode(_el$0, _el$1);
-          _$insertNode(_el$0, _el$11);
-          _$setProp(_el$0, "flexDirection", "row");
-          _$setProp(_el$0, "justifyContent", "space-between");
-          _$insertNode(_el$1, _$createTextNode(`[OpenCode Go]`));
-          _$insertNode(_el$11, _$createTextNode(`use/1M tok`));
-          _$setProp(_el$11, "fg", "#555555");
-          _$insert(_el$9, () => props.items.map(m => {
-            const mx = m.burn !== null ? m.burn / props.baseline : 99;
-            const active = isActive(m.id);
-            const unknown = m.mult === "?";
-            const costFg = unknown || !m.score ? props.api.theme.current.textMuted : costColor(mx, props.api.theme.current);
-            const nameFg = active ? props.api.theme.current.accent : props.api.theme.current.textMuted;
-            const tag = m.recent ? "✦ " : "";
-            const label = clipName(m.name, NAME_MAX_CHARS - tag.length);
-            return (() => {
-              var _el$13 = _$createElement("box"),
-                _el$14 = _$createElement("text"),
-                _el$15 = _$createElement("box"),
-                _el$16 = _$createElement("text"),
-                _el$17 = _$createElement("text");
-              _$insertNode(_el$13, _el$14);
-              _$insertNode(_el$13, _el$15);
-              _$setProp(_el$13, "flexDirection", "row");
-              _$setProp(_el$13, "justifyContent", "space-between");
-              _$setProp(_el$14, "wrapMode", "none");
-              _$insert(_el$14, active ? "● " : "  ", null);
-              _$insert(_el$14, () => m.mult, null);
-              _$insertNode(_el$15, _el$16);
-              _$insertNode(_el$15, _el$17);
-              _$setProp(_el$15, "flexDirection", "row");
-              _$setProp(_el$16, "fg", "#666666");
-              _$setProp(_el$16, "wrapMode", "none");
-              _$insert(_el$16, tag);
-              _$setProp(_el$17, "fg", nameFg);
-              _$setProp(_el$17, "wrapMode", "none");
-              _$insert(_el$17, label);
-              _$effect(_$p => _$setProp(_el$14, "fg", active ? props.api.theme.current.accent : costFg, _$p));
-              return _el$13;
-            })();
-          }), null);
-          _$effect(_$p => _$setProp(_el$1, "fg", props.api.theme.current.textMuted, _$p));
-          return _el$9;
-        }
-      }), null);
-      _$effect(_$p => _$setProp(_el$3, "fg", props.api.theme.current.text, _$p));
-      return _el$;
-    }
-  });
+function CostsPanel(props) {
+  const toggleIcon = () => props.collapsed ? "▶" : "▼";
+  return (() => {
+    var _el$ = _$createElement("box"),
+      _el$2 = _$createElement("box"),
+      _el$3 = _$createElement("text"),
+      _el$4 = _$createElement("b"),
+      _el$5 = _$createTextNode(` Costs`);
+    _$insertNode(_el$, _el$2);
+    _$setProp(_el$, "gap", 0);
+    _$insertNode(_el$2, _el$3);
+    _$setProp(_el$2, "flexDirection", "row");
+    _$insertNode(_el$3, _el$4);
+    _$insertNode(_el$4, _el$5);
+    _$insert(_el$4, toggleIcon, _el$5);
+    _$insert(_el$2, _$createComponent(Show, {
+      get when() {
+        return props.collapsed;
+      },
+      get children() {
+        var _el$6 = _$createElement("text"),
+          _el$7 = _$createTextNode(` (`),
+          _el$8 = _$createTextNode(` models)`);
+        _$insertNode(_el$6, _el$7);
+        _$insertNode(_el$6, _el$8);
+        _$insert(_el$6, () => props.items.length, _el$8);
+        _$effect(_$p => _$setProp(_el$6, "fg", props.theme().muted, _$p));
+        return _el$6;
+      }
+    }), null);
+    _$insert(_el$, _$createComponent(Show, {
+      get when() {
+        return !props.collapsed;
+      },
+      get children() {
+        var _el$9 = _$createElement("box"),
+          _el$0 = _$createElement("box"),
+          _el$1 = _$createElement("text"),
+          _el$11 = _$createElement("text");
+        _$insertNode(_el$9, _el$0);
+        _$setProp(_el$9, "gap", 0);
+        _$insertNode(_el$0, _el$1);
+        _$insertNode(_el$0, _el$11);
+        _$setProp(_el$0, "flexDirection", "row");
+        _$setProp(_el$0, "justifyContent", "space-between");
+        _$insertNode(_el$1, _$createTextNode(`[OpenCode Go]`));
+        _$insertNode(_el$11, _$createTextNode(`use/1M tok`));
+        _$insert(_el$9, () => props.items.map(m => {
+          const mx = m.burn !== null ? m.burn / props.baseline : 99;
+          const active = m.active;
+          const unknown = m.mult === "?";
+          const costFg = unknown || !m.score ? props.theme().muted : props.theme()[costColorKey(mx)];
+          const nameFg = active ? props.theme().accent : props.theme().muted;
+          const tag = m.recent ? "✦ " : "";
+          const label = clipName(m.name, NAME_MAX_CHARS - tag.length);
+          return (() => {
+            var _el$13 = _$createElement("box"),
+              _el$14 = _$createElement("text"),
+              _el$15 = _$createElement("box"),
+              _el$16 = _$createElement("text"),
+              _el$17 = _$createElement("text");
+            _$insertNode(_el$13, _el$14);
+            _$insertNode(_el$13, _el$15);
+            _$setProp(_el$13, "flexDirection", "row");
+            _$setProp(_el$13, "justifyContent", "space-between");
+            _$setProp(_el$14, "wrapMode", "none");
+            _$insert(_el$14, active ? "● " : "  ", null);
+            _$insert(_el$14, () => m.mult, null);
+            _$insertNode(_el$15, _el$16);
+            _$insertNode(_el$15, _el$17);
+            _$setProp(_el$15, "flexDirection", "row");
+            _$setProp(_el$16, "wrapMode", "none");
+            _$insert(_el$16, tag);
+            _$setProp(_el$17, "fg", nameFg);
+            _$setProp(_el$17, "wrapMode", "none");
+            _$insert(_el$17, label);
+            _$effect(_p$ => {
+              var _v$5 = active ? props.theme().accent : costFg,
+                _v$6 = props.theme().faint;
+              _v$5 !== _p$.e && (_p$.e = _$setProp(_el$14, "fg", _v$5, _p$.e));
+              _v$6 !== _p$.t && (_p$.t = _$setProp(_el$16, "fg", _v$6, _p$.t));
+              return _p$;
+            }, {
+              e: undefined,
+              t: undefined
+            });
+            return _el$13;
+          })();
+        }), null);
+        _$effect(_p$ => {
+          var _v$ = props.theme().muted,
+            _v$2 = props.theme().dim;
+          _v$ !== _p$.e && (_p$.e = _$setProp(_el$1, "fg", _v$, _p$.e));
+          _v$2 !== _p$.t && (_p$.t = _$setProp(_el$11, "fg", _v$2, _p$.t));
+          return _p$;
+        }, {
+          e: undefined,
+          t: undefined
+        });
+        return _el$9;
+      }
+    }), null);
+    _$effect(_p$ => {
+      var _v$3 = props.theme().text,
+        _v$4 = props.onToggleCollapse;
+      _v$3 !== _p$.e && (_p$.e = _$setProp(_el$3, "fg", _v$3, _p$.e));
+      _v$4 !== _p$.t && (_p$.t = _$setProp(_el$3, "onMouseDown", _v$4, _p$.t));
+      return _p$;
+    }, {
+      e: undefined,
+      t: undefined
+    });
+    return _el$;
+  })();
 }
 function LimitsUnavailable(props) {
   return (() => {
@@ -342,10 +140,10 @@ function LimitsUnavailable(props) {
     _$insertNode(_el$20, _$createTextNode(`▼ Costs`));
     _$insertNode(_el$22, _$createTextNode(`[OpenCode Go] limits unavailable`));
     _$effect(_p$ => {
-      var _v$ = props.api.theme.current.text,
-        _v$2 = props.api.theme.current.textMuted;
-      _v$ !== _p$.e && (_p$.e = _$setProp(_el$19, "fg", _v$, _p$.e));
-      _v$2 !== _p$.t && (_p$.t = _$setProp(_el$22, "fg", _v$2, _p$.t));
+      var _v$7 = props.theme().text,
+        _v$8 = props.theme().muted;
+      _v$7 !== _p$.e && (_p$.e = _$setProp(_el$19, "fg", _v$7, _p$.e));
+      _v$8 !== _p$.t && (_p$.t = _$setProp(_el$22, "fg", _v$8, _p$.t));
       return _p$;
     }, {
       e: undefined,
@@ -354,14 +152,96 @@ function LimitsUnavailable(props) {
     return _el$18;
   })();
 }
+function V1SidebarContent(props) {
+  const [activeId, setActiveId] = createSignal("");
+  const [collapsed, setCollapsed] = createSignal(props.api.kv.get("costs-collapsed", false));
+  const dispose = props.api.event.on("session.updated", event => {
+    const sid = event.properties?.info?.id;
+    if (sid && sid !== props.sessionID) return;
+    const id = event.properties?.info?.model?.id;
+    if (id) setActiveId(id);
+  });
+  onCleanup(dispose);
+  const data = createMemo(() => buildCostItems({
+    providers: props.api.state.provider,
+    limits: props.limits,
+    activeModel: activeId()
+  }));
+  const theme = () => v1Theme(props.api.theme.current);
+  const toggleCollapsed = () => {
+    const next = !collapsed();
+    setCollapsed(next);
+    props.api.kv.set("costs-collapsed", next);
+  };
+  return _$createComponent(Show, {
+    get when() {
+      return data().items.length > 0;
+    },
+    get children() {
+      return _$createComponent(CostsPanel, {
+        get items() {
+          return data().items;
+        },
+        get baseline() {
+          return data().baseline;
+        },
+        get collapsed() {
+          return collapsed();
+        },
+        theme: theme,
+        onToggleCollapse: toggleCollapsed
+      });
+    }
+  });
+}
+function V2SidebarContent(props) {
+  const theme = () => v2Theme(props.context.theme);
+  const collapsed = () => props.store().collapsed;
+  const data = createMemo(() => {
+    const context = props.context;
+    const location = context.location ?? context.data.location.default();
+    const providers = context.data.location.provider.list(location) ?? [];
+    const go = providers.find(p => isGoProvider(p.id, p.name));
+    const models = (context.data.location.model.list(location) ?? []).filter(m => !!go && m.providerID === go.id);
+    return buildCostItems({
+      providers,
+      models: go ? models : [],
+      limits: props.limits,
+      activeModel: context.ui.model.current()
+    });
+  });
+  const toggleCollapsed = () => {
+    props.update(draft => {
+      draft.collapsed = !draft.collapsed;
+    });
+  };
+  return _$createComponent(Show, {
+    get when() {
+      return data().items.length > 0;
+    },
+    get children() {
+      return _$createComponent(CostsPanel, {
+        get items() {
+          return data().items;
+        },
+        get baseline() {
+          return data().baseline;
+        },
+        get collapsed() {
+          return collapsed();
+        },
+        theme: theme,
+        onToggleCollapse: toggleCollapsed
+      });
+    }
+  });
+}
 const tui = async api => {
   const [enabled, setEnabled] = createSignal(api.kv.get("costs-enabled", true));
   const [usageLimits, setUsageLimits] = createSignal(undefined);
-  loadUsageLimits(api).then(limits => setUsageLimits(limits)).catch(() => setUsageLimits(null));
-  const data = createMemo(() => {
-    const limits = usageLimits();
-    return limits ? getGoModels(api, limits) : null;
-  });
+  loadUsageLimits({
+    cache: kvCache(api.kv)
+  }).then(limits => setUsageLimits(limits)).catch(() => setUsageLimits(null));
   const toggle = () => {
     const next = !enabled();
     setEnabled(next);
@@ -383,7 +263,7 @@ const tui = async api => {
   api.slots.register({
     order: SIDEBAR_ORDER,
     slots: {
-      sidebar_content(_ctx, _props) {
+      sidebar_content(_ctx, props) {
         return _$createComponent(Show, {
           get when() {
             return enabled();
@@ -391,7 +271,7 @@ const tui = async api => {
           get children() {
             return _$createComponent(Show, {
               get when() {
-                return data();
+                return usageLimits();
               },
               get fallback() {
                 return _$createComponent(Show, {
@@ -400,23 +280,22 @@ const tui = async api => {
                   },
                   get children() {
                     return _$createComponent(LimitsUnavailable, {
-                      api: api
+                      theme: () => v1Theme(api.theme.current)
                     });
                   }
                 });
               },
-              children: d => _$createComponent(SidebarContentView, {
-                api: api,
-                get items() {
-                  return d().items;
-                },
-                get baseline() {
-                  return d().baseline;
-                },
-                get sessionID() {
-                  return _props.session_id;
-                }
-              })
+              get children() {
+                return _$createComponent(V1SidebarContent, {
+                  api: api,
+                  get limits() {
+                    return usageLimits();
+                  },
+                  get sessionID() {
+                    return props.session_id;
+                  }
+                });
+              }
             });
           }
         });
@@ -424,8 +303,79 @@ const tui = async api => {
     }
   });
 };
+const setup = async context => {
+  const [storeValue, update] = context.storage.store("costs", {
+    initial: {
+      enabled: true,
+      collapsed: false
+    }
+  });
+  const store = () => readStore(storeValue);
+  const [usageLimits, setUsageLimits] = createSignal(undefined);
+  loadUsageLimits().then(limits => setUsageLimits(limits)).catch(() => setUsageLimits(null));
+  const disposeSlot = context.ui.slot({
+    append: "sidebar.content",
+    render: ({
+      sessionID
+    }) => _$createComponent(Show, {
+      get when() {
+        return store().enabled;
+      },
+      get children() {
+        return _$createComponent(Show, {
+          get when() {
+            return usageLimits();
+          },
+          get fallback() {
+            return _$createComponent(Show, {
+              get when() {
+                return usageLimits() === null;
+              },
+              get children() {
+                return _$createComponent(LimitsUnavailable, {
+                  theme: () => v2Theme(context.theme)
+                });
+              }
+            });
+          },
+          get children() {
+            return _$createComponent(V2SidebarContent, {
+              context: context,
+              get limits() {
+                return usageLimits();
+              },
+              store: store,
+              update: update,
+              sessionID: sessionID
+            });
+          }
+        });
+      }
+    })
+  });
+  context.keymap.layer(() => ({
+    mode: "global",
+    commands: [{
+      id: "model-costs.toggle",
+      title: "Toggle Go Costs",
+      group: "Model Costs",
+      slash: {
+        name: "toggle-costs"
+      },
+      run: () => {
+        update(draft => {
+          draft.enabled = !draft.enabled;
+        });
+      }
+    }]
+  }));
+  return () => {
+    if (typeof disposeSlot === "function") disposeSlot();
+  };
+};
 const pluginModule = {
   id: "model-costs",
-  tui
+  tui,
+  setup
 };
 export default pluginModule;
