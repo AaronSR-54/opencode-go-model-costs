@@ -57,7 +57,10 @@ factor, so the relative rankings are identical.
 
 ## Rendering rules
 
-- **Colors** — green (≤1.5x), yellow (≤5x), red (>5x).
+- **Colors** — green (≤1.5x), yellow (≤5x), red (>5x). The tones come from the
+  host theme (`success` / `warning` / `error`); both V1 palettes and V2 tokens
+  are supported, so the panel keeps its colors when V2 hands over `RGBA` values
+  or stateful (`base` / hovered / focused) wrappers instead of strings.
 - **`?`** — the model has no price or no documented usage limit; it is not
   scored and is sorted last.
 - **`0.0x`** — a free / unlimited model (e.g. `longcat-2.5-preview-free`),
@@ -76,6 +79,10 @@ Works on both OpenCode V1 and V2. The TUI entrypoint exports a dual module
 adapter, each on its own runtime API, and both share the same cost computation
 and panel rendering. The server entrypoint is likewise a no-op on either
 version. No extra configuration is needed beyond registering the plugin.
+
+Theme colors are normalized to a single path: V1's `RGBA` palette, V2's resolved
+`RGBA` tokens and stateful tokens (and plain string colors from custom themes)
+all feed the same panel, so the burn-rate colors render identically on both.
 
 After updating the package, **restart OpenCode** so V2 picks up the new panel;
 V2 loads plugin modules at startup and keeps the old one until you restart.
