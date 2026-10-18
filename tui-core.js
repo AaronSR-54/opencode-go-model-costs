@@ -290,46 +290,65 @@ export function buildCostItems({ providers, models, limits, activeModel = null }
 }
 
 // Resolve the V1 theme snapshot into the neutral token set the panel uses.
+// V1 hands over concrete `RGBA` values, so this stays a pass-through; routing
+// through `resolveColor` keeps a single color path and also accepts string
+// palettes.
 export function v1Theme(current) {
   const c = current || {};
   return {
-    text: c.text,
-    muted: c.textMuted,
+    text: resolveColor(c.text),
+    muted: resolveColor(c.textMuted),
     faint: "#666666",
     dim: "#555555",
-    accent: c.accent,
-    success: c.success,
-    warning: c.warning,
-    error: c.error,
+    accent: resolveColor(c.accent),
+    success: resolveColor(c.success),
+    warning: resolveColor(c.warning),
+    error: resolveColor(c.error),
   };
 }
 
-function statefulColor(value) {
+// Colors reach the plugin in three shapes: CSS-like strings (V1 themes and
+// custom V2 themes), OpenTUI `RGBA` instances (V2 resolved tokens, accepted
+// directly by `fg`), and stateful tokens (`{ base, hovered, focused, ... }`).
+// `resolveColor` normalizes all of them to a usable ColorInput, or "" when
+// nothing usable is found (OpenTUI then falls back to the terminal default).
+function isRgba(value) {
+  if (typeof value.toInts === "function") return true;
+  const buffer = value.buffer;
+  return ArrayBuffer.isView(buffer) && typeof buffer[0] === "number";
+}
+
+export function resolveColor(value) {
   if (typeof value === "string") return value;
-  if (value && typeof value === "object") {
-    if (typeof value.base === "string") return value.base;
-    for (const key of Object.keys(value)) {
-      const resolved = statefulColor(value[key]);
-      if (resolved) return resolved;
-    }
+  if (!value || typeof value !== "object") return "";
+  if (isRgba(value)) return value;
+  // Stateful tokens expose their default color as `base`.
+  if (Object.prototype.hasOwnProperty.call(value, "base")) {
+    const base = resolveColor(value.base);
+    if (base) return base;
+  }
+  // Be lenient with unexpected shapes: use the first nested color we can find.
+  for (const key of Object.keys(value)) {
+    const resolved = resolveColor(value[key]);
+    if (resolved) return resolved;
   }
   return "";
 }
 
-// Resolve the V2 theme tokens (text.base/muted/faint, feedback.*, accent) into
-// the same neutral token set. Stateful tokens expose `state(...)`, so the
-// resolver falls back to the first concrete color it finds.
+// Resolve the V2 theme tokens (text.base/muted/faint, action.primary, and
+// feedback.*) into the same neutral token set. V2 feeds `RGBA` instances and
+// stateful wrappers, so everything goes through `resolveColor`.
 export function v2Theme(theme) {
   const text = theme?.text ?? {};
   const feedback = text.feedback ?? {};
   return {
-    text: statefulColor(text.base),
-    muted: statefulColor(text.muted),
-    faint: statefulColor(text.faint),
-    dim: statefulColor(text.faint),
-    accent: statefulColor(text.action?.primary) || statefulColor(text.base),
-    success: statefulColor(feedback.success),
-    warning: statefulColor(feedback.warning),
-    error: statefulColor(feedback.error),
+    text: resolveColor(text.base),
+    muted: resolveColor(text.muted),
+    faint: resolveColor(text.faint),
+    dim: resolveColor(text.faint),
+    accent: resolveColor(text.action?.primary) || resolveColor(text.base),
+    success: resolveColor(feedback.success),
+    warning: resolveColor(feedback.warning),
+    error: resolveColor(feedback.error),
   };
 }

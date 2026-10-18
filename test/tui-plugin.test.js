@@ -5,11 +5,16 @@ import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import pluginModule from "../tui.js";
+import { v2Theme } from "../tui-core.js";
 
 // Loader predicates, replicated literally from each runtime's source:
 // V1 accepts { id, tui }, V2 accepts { id (non-empty), setup }.
 const isV1Plugin = (m) => !!m && typeof m.id === "string" && m.id.length > 0 && typeof m.tui === "function";
 const isV2Plugin = (m) => !!m && typeof m.id === "string" && m.id.length > 0 && typeof m.setup === "function";
+
+// Minimal stand-in for OpenTUI's RGBA, the shape V2 hands plugins as theme
+// tokens (and a valid `fg` input as-is).
+const rgba = (r, g, b, a = 255) => ({ toInts: () => [r, g, b, a] });
 
 test("TUI entrypoint exposes the V1 and V2 module shape", () => {
   assert.equal(typeof pluginModule.id, "string");
@@ -30,10 +35,10 @@ function createV2Harness() {
     location: { directory: "/tmp/project" },
     theme: {
       text: {
-        base: "#111",
+        base: rgba(237, 238, 233),
         muted: "#222",
         faint: "#333",
-        action: { primary: "#abc" },
+        action: { primary: { base: rgba(3, 6, 9), hovered: rgba(9, 9, 9) } },
         feedback: { success: { base: "#0f0" }, warning: { base: "#ff0" }, error: { base: "#f00" } },
       },
     },
@@ -66,6 +71,15 @@ function createV2Harness() {
   };
   return { context, state, calls };
 }
+
+test("v2Theme resolves RGBA theme tokens from the V2 context", () => {
+  const { context } = createV2Harness();
+  const theme = v2Theme(context.theme);
+  assert.equal(theme.text, context.theme.text.base, 'RGBA token must pass through, not become ""');
+  assert.equal(theme.accent, context.theme.text.action.primary.base, "stateful accent must unwrap to base");
+  assert.equal(theme.success, "#0f0");
+  assert.notEqual(theme.text, "");
+});
 
 test("setup registers the sidebar slot and /toggle-costs, persists state and returns cleanup", async () => {
   const originalFetch = globalThis.fetch;

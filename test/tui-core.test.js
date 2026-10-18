@@ -13,12 +13,19 @@ import {
   normalizeModelId,
   parseLimitsFromMarkdown,
   parseUsageLimits,
+  resolveColor,
   v1Theme,
   v2Theme,
 } from "../tui-core.js";
 
 function model(overrides = {}) {
   return { name: "Model", cost: { input: 1, output: 1 }, release_date: "2025-01-01", ...overrides };
+}
+
+// Minimal stand-in for OpenTUI's RGBA, which V2 hands to plugins as theme
+// tokens. Identity matters: the resolver must pass the object through.
+function rgba(r, g, b, a = 255) {
+  return { toInts: () => [r, g, b, a] };
 }
 
 const LIMITS = {
@@ -244,4 +251,72 @@ test("v2Theme resolves every token, including stateful accents", () => {
 test("v2Theme accepts a plain string accent", () => {
   const theme = v2Theme({ text: { base: "#111", action: { primary: "#xyz" } } });
   assert.equal(theme.accent, "#xyz");
+});
+
+test("resolveColor passes strings and RGBA through and unwraps stateful tokens", () => {
+  const color = rgba(1, 2, 3);
+  assert.equal(resolveColor("#abc"), "#abc");
+  assert.equal(resolveColor(""), "");
+  assert.equal(resolveColor(color), color);
+  assert.equal(resolveColor({ base: color, hovered: rgba(9, 9, 9), state: () => color }), color);
+  assert.equal(resolveColor(undefined), "");
+  assert.equal(resolveColor(null), "");
+  assert.equal(resolveColor(42), "");
+  assert.equal(resolveColor({}), "");
+});
+
+test("resolveColor detects an RGBA-shaped buffer and falls back to nested colors", () => {
+  const buffered = { buffer: new Uint16Array([10, 20, 30, 255]) };
+  assert.equal(resolveColor(buffered), buffered);
+  const nested = { muted: rgba(4, 5, 6) };
+  assert.equal(resolveColor(nested), nested.muted);
+});
+
+test("v2Theme resolves RGBA tokens and stateful wrappers from the V2 theme", () => {
+  const base = rgba(237, 238, 233);
+  const muted = rgba(180, 180, 180);
+  const accent = rgba(3, 6, 9);
+  const success = rgba(168, 238, 246);
+  const warning = rgba(187, 106, 30);
+  const error = rgba(159, 107, 96);
+  const theme = v2Theme({
+    text: {
+      base,
+      muted,
+      faint: muted,
+      action: { primary: { base: accent, hovered: base, focused: base, state: () => accent } },
+      feedback: {
+        success: { base: success, muted: success },
+        warning: { base: warning, muted: warning },
+        error: { base: error, muted: error },
+      },
+    },
+  });
+  assert.equal(theme.text, base);
+  assert.equal(theme.muted, muted);
+  assert.equal(theme.faint, muted);
+  assert.equal(theme.dim, muted);
+  assert.equal(theme.accent, accent);
+  assert.equal(theme.success, success);
+  assert.equal(theme.warning, warning);
+  assert.equal(theme.error, error);
+});
+
+test("v2Theme falls back to text.base for the accent and empties missing tokens", () => {
+  const base = rgba(1, 1, 1);
+  const theme = v2Theme({ text: { base } });
+  assert.equal(theme.accent, base);
+  assert.equal(theme.muted, "");
+  assert.equal(theme.success, "");
+  assert.equal(theme.warning, "");
+  assert.equal(theme.error, "");
+});
+
+test("v1Theme keeps RGBA values intact through the shared resolver", () => {
+  const text = rgba(1, 2, 3);
+  const theme = v1Theme({ text, textMuted: rgba(4, 5, 6), accent: "#accent", success: "#0f0" });
+  assert.equal(theme.text, text);
+  assert.equal(theme.muted.toInts()[0], 4);
+  assert.equal(theme.accent, "#accent");
+  assert.equal(theme.success, "#0f0");
 });

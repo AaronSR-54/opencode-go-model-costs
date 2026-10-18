@@ -1,4 +1,5 @@
 /** @jsxImportSource @opentui/solid */
+import type { RGBA } from "@opentui/core";
 import type { TuiPluginApi, TuiPluginModule } from "@opencode-ai/plugin/tui";
 import { Show, createMemo, createSignal, onCleanup } from "solid-js";
 import type { TuiV2Context } from "./tui-v2-types";
@@ -26,15 +27,19 @@ type CostItem = {
   recent: boolean;
   active: boolean;
 };
+// Accent / semantic colors come from the host theme. V1 and string-based V2
+// themes yield strings, while V2 resolved tokens are OpenTUI `RGBA` values;
+// both are valid `fg`/`backgroundColor` inputs.
+type PanelColor = string | RGBA;
 type PanelTheme = {
-  text: string;
-  muted: string;
-  faint: string;
-  dim: string;
-  accent: string;
-  success: string;
-  warning: string;
-  error: string;
+  text: PanelColor;
+  muted: PanelColor;
+  faint: PanelColor;
+  dim: PanelColor;
+  accent: PanelColor;
+  success: PanelColor;
+  warning: PanelColor;
+  error: PanelColor;
 };
 type V2CostsStore = { enabled: boolean; collapsed: boolean };
 

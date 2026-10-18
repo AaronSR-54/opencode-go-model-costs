@@ -9,6 +9,11 @@ import { createElement as _$createElement } from "@opentui/solid";
 
 import { Show, createMemo, createSignal, onCleanup } from "solid-js";
 import { NAME_MAX_CHARS, SIDEBAR_ORDER, buildCostItems, clipName, costColorKey, isGoProvider, kvCache, loadUsageLimits, v1Theme, v2Theme } from "./tui-core.js";
+
+// Accent / semantic colors come from the host theme. V1 and string-based V2
+// themes yield strings, while V2 resolved tokens are OpenTUI `RGBA` values;
+// both are valid `fg`/`backgroundColor` inputs.
+
 function readStore(value) {
   return typeof value === "function" ? value() : value;
 }
