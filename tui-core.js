@@ -5,17 +5,18 @@ export const SIDEBAR_ORDER = 200;
 export const RECENT_WINDOW_DAYS = 30;
 export const NAME_MAX_CHARS = 28;
 
-// Monthly usage limits are looked up at runtime from the official Go docs
-// instead of a hardcoded table, so models added/removed/changed upstream are
-// picked up automatically. Sources are tried in order: the legacy markdown
-// endpoint first, then the current docs page (HTML). Each contains the
-// per-model "Monthly limit" table.
-// The docs' base "Go" table is used: Go Plus scales every limit by the same
-// factor, so relative burn rates are identical.
+// Monthly usage limits are looked up at runtime instead of a hardcoded table,
+// so models added/removed/changed upstream are picked up automatically.
+// Sources are tried in order: the console's Go page (current source of truth,
+// with the exact model ids and the Go/Go Plus columns), then the docs pages
+// (markdown first) as a fallback in case the table moves back there.
+// The base "Go" column is used. Go Plus is not a uniform multiple of Go
+// ($15 → $60 on some models, $200 → $400 on others), so the ranking reflects
+// the Go plan and cannot be derived by scaling.
 export const USAGE_LIMITS_URLS = [
-  "https://opencode.ai/docs/go.md",
-  "https://opencode.ai/v2/docs/console/go/",
-  "https://opencode.ai/docs/go/",
+  "https://opencode.ai/console/go",
+  "https://opencode.ai/docs/console/go.md",
+  "https://opencode.ai/docs/console/go/",
 ];
 export const USAGE_LIMITS_CACHE_KEY = "costs-usage-limits";
 export const USAGE_LIMITS_TTL_MS = 12 * 60 * 60 * 1000;
@@ -125,7 +126,41 @@ export function parseLimitsFromHtml(html) {
   return limits;
 }
 
+// Parse the console's "Go and Go Plus allowances" table, which is now the only
+// place the per-model monthly limits are published. Each `<tr>` carries the
+// catalog id in `data-model` and a `data-allowance-type="usage"` cell with one
+// value per plan; the first one is the base Go limit. Free models render as ∞.
+export function parseLimitsFromConsole(html) {
+  const limits = {};
+  const tables = html.match(/<table[\s\S]*?<\/table>/gi) ?? [];
+  const table = tables.find((t) => /data-allowance-type=["']usage["']/i.test(t));
+  if (!table) return limits;
+  const rows = table.match(/<tr[\s\S]*?<\/tr>/gi) ?? [];
+  for (const row of rows) {
+    const id = row.match(/data-model=["']([^"']+)["']/i)?.[1];
+    if (!id) continue;
+    const key = normalizeModelId(id);
+    if (!key) continue;
+    const cell = row.match(/<t[hd][^>]*data-allowance-type=["']usage["'][\s\S]*?<\/t[hd]>/i)?.[0];
+    if (!cell) continue;
+    // Prefer the explicit `data-plan="go"` value so the Go Plus column is not
+    // picked up by accident (it can be cheaper per unit on some models).
+    const go = cell.match(/data-plan=["']go["'][\s\S]*?data-layer=["']current-value["'][^>]*>([\s\S]*?)<\/span>/i)?.[1];
+    const raw = go !== undefined ? stripHtml(go) : stripHtml(cell);
+    if (!raw) continue;
+    if (/unlimited|∞/i.test(raw)) {
+      limits[key] = UNLIMITED;
+      continue;
+    }
+    const value = firstNumber(raw);
+    if (value !== null) limits[key] = value;
+  }
+  return limits;
+}
+
 export function parseUsageLimits(body) {
+  const consoleLimits = parseLimitsFromConsole(body);
+  if (Object.keys(consoleLimits).length > 0) return consoleLimits;
   return /<table/i.test(body) ? parseLimitsFromHtml(body) : parseLimitsFromMarkdown(body);
 }
 
@@ -263,11 +298,15 @@ export function buildCostItems({ providers, models, limits, activeModel = null }
       const active = isActiveModel(m.id, activeModel);
       const c = m.cost;
       const limit = limitOf(m.id);
-      if (!c || !limit || limit <= 0) {
-        const score = c ? c.input + c.output * 0.3 : null;
-        return { id: m.id, name: m.name, mult: "?", score, burn: null, limit: null, recent, active };
+      const sc = c ? c.input + c.output * 0.3 : null;
+      // A zero-priced model consumes no quota, even when the limits table does
+      // not list it (some free models are absent from the console table).
+      if (c && sc === 0) {
+        return { id: m.id, name: m.name, score: sc, burn: 0, limit: UNLIMITED, mult: "0.0x", recent, active };
       }
-      const sc = c.input + c.output * 0.3;
+      if (!c || !limit || limit <= 0) {
+        return { id: m.id, name: m.name, mult: "?", score: sc, burn: null, limit: null, recent, active };
+      }
       const burn = sc / limit; // share of monthly allowance per 1M tok
       return {
         id: m.id,

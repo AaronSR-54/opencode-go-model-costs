@@ -30,8 +30,8 @@ Adds a collapsible **Costs** panel to the session sidebar:
 ## How it's calculated
 
 Go meters usage as `cost × (60 / model_usage_limit)` against shared dollar
-windows (see the [usage-limits table](https://opencode.ai/docs/go/#usage-limits)
-in the official docs). The plugin scores each model as:
+windows (see the [console limits table](https://opencode.ai/console/go#limits)).
+The plugin scores each model as:
 
 ```
 burn = blended_cost_per_1M_tokens / usage_limit
@@ -41,19 +41,21 @@ mult = burn / burn(minimax-m2.7)
 where `blended_cost = input + output * 0.3` per 1M tokens.
 
 Prices come from the provider catalog (models.dev). Usage limits are **not
-hardcoded**: they are parsed at runtime from the monthly-limit table on the
-official [Go docs page](https://opencode.ai/v2/docs/console/go/) (with the
-legacy `go.md` markdown endpoint tried first as a fallback), so models
-added/removed/changed upstream are picked up automatically. The fetched
-table is cached in the plugin's local storage for 12h and reused (even if
-stale) whenever the network is unavailable.
+hardcoded**: they are parsed at runtime from the *Monthly limit* column of the
+allowances table on the [Go console page](https://opencode.ai/console/go), so
+models added/removed/changed upstream are picked up automatically. The docs
+pages (markdown first, then HTML) are tried as a fallback in case the table moves
+back there. The fetched table is cached in the plugin's local storage for 12h
+and reused (even if stale) whenever the network is unavailable.
 
-Name matching between the docs table and the catalog model ids ignores
-dots-vs-dashes, so the docs' `claude-haiku-5.5` resolves to the catalog id
-`claude-haiku-5-5`.
+The console table ships the exact provider model id in each row, so dot/dash
+differences between naming conventions don't need guesswork; the legacy name
+matching (which ignores dots-vs-dashes, e.g. `claude-haiku-5.5` →
+`claude-haiku-5-5`) is still applied to the docs fallback.
 
-The base **Go** table is used. Go Plus scales every limit by the same
-factor, so the relative rankings are identical.
+The base **Go** column is used. Go Plus is not a uniform multiple of Go on every
+model ($15 → $60 on some, $200 → $400 on others), so it can't be derived by
+scaling; the ranking reflects the Go plan.
 
 ## Rendering rules
 
@@ -63,8 +65,8 @@ factor, so the relative rankings are identical.
   or stateful (`base` / hovered / focused) wrappers instead of strings.
 - **`?`** — the model has no price or no documented usage limit; it is not
   scored and is sorted last.
-- **`0.0x`** — a free / unlimited model (e.g. `longcat-2.5-preview-free`),
-  which consumes no quota.
+- **`0.0x`** — a free / unlimited model (zero price, or listed as `∞`), which
+  consumes no quota.
 - **`✦`** — model released in the last 30 days.
 - Long model names are truncated with `…` so rows never overflow the
   sidebar.

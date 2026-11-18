@@ -11,6 +11,7 @@ import {
   matchKey,
   normalizeModel,
   normalizeModelId,
+  parseLimitsFromConsole,
   parseLimitsFromMarkdown,
   parseUsageLimits,
   resolveColor,
@@ -73,6 +74,22 @@ test("buildCostItems shows `0.0x` for free/unlimited models", () => {
   assert.equal(items.find((i) => i.id === "free-model").mult, "0.0x");
 });
 
+test("buildCostItems treats a zero-priced model without a documented limit as free", () => {
+  const models = {
+    "minimax-m2.7": model({ name: "MiniMax M2.7" }),
+    "step-5-preview-free": model({ name: "Step 5 Preview Free", cost: { input: 0, output: 0 } }),
+  };
+  const { items } = buildCostItems({
+    providers: [{ id: "opencode-go", models }],
+    limits: { "minimax-m2.7": 60 },
+  });
+  const free = items.find((i) => i.id === "step-5-preview-free");
+  assert.equal(free.mult, "0.0x");
+  assert.equal(free.burn, 0);
+  assert.equal(free.limit, UNLIMITED);
+  assert.equal(items[0].id, "step-5-preview-free");
+});
+
 test("buildCostItems marks models released in the last 30 days with `recent`", () => {
   const models = {
     newest: model({ name: "Newest", release_date: "2025-03-15" }),
@@ -126,6 +143,41 @@ test("parseUsageLimits picks HTML or markdown based on the body", () => {
   const html = "<table><tr><th>Model</th><th>Monthly limit</th></tr><tr><td>Qwen3.8 Max</td><td>$50</td></tr></table>";
   assert.deepEqual(parseUsageLimits(html), { "qwen3.8-max": 50 });
   assert.deepEqual(parseLimitsFromMarkdown("no table here"), {});
+});
+
+test("parseLimitsFromConsole reads the Go column of the console allowances table", () => {
+  // Shape of https://opencode.ai/console/go: the catalog id lives in
+  // `data-model`, requests and usage live in separate cells, and each plan has
+  // its own `data-plan` block (Go first, Go Plus second).
+  const usageCell = (go, plus, type = "usage") =>
+    `<td data-hk="x" data-allowance-type="${type}"><div class="console-go-models-values" data-layer="${type}" aria-hidden="true">` +
+    `<span class="console-go-models-value" data-layer="allowance" data-plan="go"><span data-layer="current-value">${go}</span></span>` +
+    `<span class="console-go-models-value" data-layer="allowance" data-plan="go-plus"><span data-layer="current-value">${plus}</span></span>` +
+    `</div><span class="sr-only">Go: ${go}; Go Plus: ${plus}</span></td>`;
+  const html =
+    `<table aria-label="Go and Go Plus allowances"><thead><tr data-layer="column-headings">` +
+    `<th scope="col">Model</th><th scope="col" data-allowance-type="requests">Est. requests / 5 hr</th>` +
+    `<th scope="col" data-allowance-type="usage">Monthly limit</th></tr></thead><tbody>` +
+    `<tr data-hk="1" data-model="kimi-k3"><th scope="row"><span class="console-go-models-model-name" data-layer="model-name">Kimi K3</span></th>` +
+    usageCell("98", "392", "requests") +
+    usageCell("$15", "$60") +
+    `</tr>` +
+    `<tr data-hk="2" data-model="minimax-m3.1-flash"><th scope="row"><span class="console-go-models-model-name" data-layer="model-name">MiniMax M3.1 Flash</span></th>` +
+    usageCell("$20", "$80") +
+    `</tr>` +
+    `<tr data-hk="3" data-model="beam-free"><th scope="row"><span class="console-go-models-model-name" data-layer="model-name">Beam Free</span></th>` +
+    usageCell("∞", "∞") +
+    `</tr>` +
+    `<tr class="console-go-models-axis-row" data-layer="axis-row"><td></td><td>axis</td></tr>` +
+    `</tbody></table>`;
+  assert.deepEqual(parseLimitsFromConsole(html), {
+    "kimi-k3": 15,
+    "minimax-m3.1-flash": 20,
+    "beam-free": UNLIMITED,
+  });
+  // A page without the allowances table yields nothing, so the loader can move
+  // on to the next source.
+  assert.deepEqual(parseLimitsFromConsole("<table><tr><td>x</td></tr></table>"), {});
 });
 
 test("loadUsageLimits returns a fresh cached copy without fetching", async () => {
